@@ -1,6 +1,6 @@
 'use strict';
 // End-to-end smoke test of the real Electron app against the mock OpenAI server.
-// Run: npx electron test/smoke-main.js --ozone-platform=headless --no-sandbox --disable-gpu
+// Run: npm run test:e2e   (headless Linux: xvfb-run -a npm run test:e2e)
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const os = require('os');
@@ -49,8 +49,13 @@ app.on('browser-window-created', (_e, win) => {
   win.webContents.once('did-finish-load', async () => {
     const js = (code) => win.webContents.executeJavaScript(code);
     const shot = async (name) => {
-      const img = await win.webContents.capturePage();
-      fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG());
+      // Screenshots are diagnostics only; don't fail the run if capture isn't supported.
+      try {
+        const img = await win.webContents.capturePage();
+        fs.writeFileSync(path.join(outDir, `${name}.png`), img.toPNG());
+      } catch (e) {
+        log.push(`NOTE screenshot ${name} failed: ${e.message}`);
+      }
     };
     const srv = await srvPromise;
     try {

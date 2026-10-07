@@ -7,6 +7,9 @@ const electron = require('electron');
 
 const args = [path.join(__dirname, '..', 'test', 'smoke-main.js')];
 if (process.platform === 'linux') args.push('--no-sandbox');
+// CI virtual displays (Xvfb) have no GPU; GPU compositing then produces no frames.
+if (process.platform === 'linux' && process.env.CI) args.push('--disable-gpu');
+if (process.env.E2E_EXTRA_ARGS) args.push(...process.env.E2E_EXTRA_ARGS.split(/\s+/).filter(Boolean));
 const child = spawn(electron, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd: path.join(__dirname, '..') });
 let stdout = '';
 let stderr = '';

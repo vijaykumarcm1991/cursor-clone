@@ -62,6 +62,8 @@ Build each platform **on that platform**. Windows installers need Windows, or Wi
 - **Sandbox errors in dev.** `npm start` passes `--no-sandbox` on Linux, because dev Electron binaries don't have a SUID sandbox helper. The `.deb` package configures the sandbox properly.
 - **AppImage won't start.** On distros that restrict unprivileged user namespaces (for example Ubuntu 24.04+), run it as `./Cursor\ Clone-*.AppImage --no-sandbox` or install the `.deb`.
 
+- **Blank window in a VM or remote desktop** without GPU acceleration: start the app with `--disable-gpu`.
+
 ### Windows notes
 
 - `node-pty` ships prebuilt ConPTY binaries for x64 and arm64, so no Visual Studio is needed.
