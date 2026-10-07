@@ -56,6 +56,26 @@ npm run dist:win          # dist/*Setup*.exe (NSIS installer) and *-portable.exe
 Build each platform **on that platform**. Windows installers need Windows, or Wine on Linux. The included GitHub Actions workflow (`.github/workflows/build.yml`) runs the tests and builds both platforms on every push, then uploads the installers as artifacts.
 
 
+### Publishing a release
+
+To publish, bump the version and push a tag that matches it:
+
+```bash
+npm version 1.1.0          # updates package.json, commits, and creates tag v1.1.0
+git push --follow-tags
+```
+
+CI then tests and builds on Ubuntu and Windows. It creates a GitHub Release with these files:
+
+- `cursor-clone-<ver>-x86_64.AppImage`
+- `cursor-clone-<ver>-amd64.deb`
+- `cursor-clone-<ver>-x64.tar.gz`
+- `cursor-clone-<ver>-setup.exe`
+- `cursor-clone-<ver>-portable.exe`
+- `SHA256SUMS.txt`
+
+A tag containing `-` (for example `v1.1.0-beta.1`) is published as a pre-release. The build fails if the tag doesn't match `package.json`.
+
 ### Linux notes
 
 - **Terminal backends.** A full PTY comes from `node-pty` when it compiles, which needs `build-essential`/`gcc-c++`, `make` and `python3` at `npm install` time. Without a compiler the app falls back to util-linux `script`, which still gives a real PTY with colors, job control and resize. A basic pipe terminal is the last resort.

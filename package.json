@@ -83,7 +83,8 @@
       "mimeTypes": [
         "inode/directory"
       ],
-      "syncDesktopName": true
+      "syncDesktopName": true,
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -108,10 +109,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Cursor Clone"
+      "shortcutName": "Cursor Clone",
+      "artifactName": "${name}-${version}-setup.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "${name}-${version}-portable.${ext}"
     }
   }
 }
