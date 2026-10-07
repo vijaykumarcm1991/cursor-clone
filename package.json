@@ -1,0 +1,117 @@
+{
+  "name": "cursor-clone",
+  "productName": "Cursor Clone",
+  "version": "1.0.0",
+  "description": "Open-source AI code editor (Cursor-style) for any OpenAI-compatible API. Runs on Linux and Windows.",
+  "main": "src/main/main.js",
+  "author": {
+    "name": "Cursor Clone",
+    "email": "sdumurance@gmail.com"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/vijaykumarcm1991/cursor-clone",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vijaykumarcm1991/cursor-clone.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vijaykumarcm1991/cursor-clone/issues"
+  },
+  "desktopName": "cursor-clone.desktop",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/start.js",
+    "test": "node --test test/core.test.js",
+    "test:e2e": "node scripts/e2e.js",
+    "icon": "node scripts/make-icon.js",
+    "pack": "electron-builder --dir --publish never",
+    "dist": "electron-builder --publish never",
+    "dist:linux": "electron-builder --linux --publish never",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.4.16",
+    "marked": "^18.1.0",
+    "monaco-editor": "^0.57.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3"
+  },
+  "allowScripts": {
+    "electron": true,
+    "node-pty": true,
+    "electron-winstaller": true
+  },
+  "build": {
+    "appId": "dev.cursorclone.editor",
+    "productName": "Cursor Clone",
+    "executableName": "cursor-clone",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "package.json",
+      "!**/*.map",
+      "!node_modules/monaco-editor/{esm,dev}/**",
+      "!node_modules/monaco-editor/min-maps/**",
+      "!node_modules/node-pty/{src,deps,scripts,typings}/**"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false,
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "maintainer": "Cursor Clone <sdumurance@gmail.com>",
+      "synopsis": "AI code editor for OpenAI-compatible APIs",
+      "executableArgs": [],
+      "mimeTypes": [
+        "inode/directory"
+      ],
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cursor Clone"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
+  }
+}

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self'" />
+  <title>Cursor Clone</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" data-name="vs/editor/editor.main" href="../../node_modules/monaco-editor/min/vs/editor/editor.main.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="activitybar">
+      <button class="act active" data-view="explorer" title="Explorer (Ctrl+Shift+E)">
+        <svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+      </button>
+      <button class="act" data-view="search" title="Search (Ctrl+Shift+F)">
+        <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/></svg>
+      </button>
+      <div class="spacer"></div>
+      <button class="act" id="act-chat" title="AI Chat (Ctrl+L)">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>
+      </button>
+      <button class="act" id="act-settings" title="Settings (Ctrl+,)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
+      </button>
+    </div>
+
+    <aside id="sidebar">
+      <section id="view-explorer" class="view active">
+        <div class="view-header">
+          <span class="view-title" id="explorer-title">EXPLORER</span>
+          <div class="view-actions">
+            <button class="icon-btn" id="btn-new-file" title="New File">
+              <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M12 11v6M9 14h6"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-new-folder" title="New Folder">
+              <svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M12 10v6M9 13h6"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-refresh" title="Refresh">
+              <svg viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-collapse" title="Collapse All">
+              <svg viewBox="0 0 24 24"><path d="M7 14l5-5 5 5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="tree" tabindex="0"></div>
+        <div id="no-folder" class="empty-state">
+          <p>No folder opened.</p>
+          <button class="btn primary" id="btn-open-folder">Open Folder</button>
+          <div id="recent-list"></div>
+        </div>
+      </section>
+      <section id="view-search" class="view">
+        <div class="view-header"><span class="view-title">SEARCH</span></div>
+        <div class="search-box">
+          <div class="search-input-row">
+            <input id="search-input" type="text" placeholder="Search" spellcheck="false" />
+            <button class="toggle" id="search-case" title="Match Case">Aa</button>
+            <button class="toggle" id="search-word" title="Match Whole Word"><u>ab</u></button>
+            <button class="toggle" id="search-regex" title="Use Regular Expression">.*</button>
+          </div>
+          <input id="search-include" type="text" placeholder="files to include (e.g. *.ts, src/**)" spellcheck="false" />
+          <div id="search-summary" class="muted"></div>
+        </div>
+        <div id="search-results"></div>
+      </section>
+    </aside>
+    <div class="resizer vertical" id="resize-sidebar"></div>
+
+    <main id="main">
+      <div id="editor-area">
+        <div id="tabs"></div>
+        <div id="breadcrumbs"></div>
+        <div id="editor-host">
+          <div id="editor"></div>
+          <div id="welcome">
+            <div class="welcome-inner">
+              <div class="logo">
+                <svg viewBox="0 0 64 64"><path d="M32 4 56 18v28L32 60 8 46V18z" fill="none" stroke="currentColor" stroke-width="3"/><path d="M32 4v28l24 14M32 32 8 46" fill="none" stroke="currentColor" stroke-width="3" opacity=".6"/></svg>
+              </div>
+              <h1>Cursor Clone</h1>
+              <p class="muted">AI code editor for any OpenAI-compatible API</p>
+              <div class="shortcuts">
+                <div><span>Open Folder</span><kbd>Ctrl+Shift+O</kbd></div>
+                <div><span>Go to File</span><kbd>Ctrl+P</kbd></div>
+                <div><span>Command Palette</span><kbd>Ctrl+Shift+P</kbd></div>
+                <div><span>AI Chat</span><kbd>Ctrl+L</kbd></div>
+                <div><span>Inline Edit</span><kbd>Ctrl+K</kbd></div>
+                <div><span>Terminal</span><kbd>Ctrl+`</kbd></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="resizer horizontal" id="resize-panel"></div>
+      <div id="panel">
+        <div class="panel-header">
+          <div id="term-tabs"></div>
+          <div class="view-actions">
+            <button class="icon-btn" id="btn-new-term" title="New Terminal">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-kill-term" title="Kill Terminal">
+              <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>
+            </button>
+            <button class="icon-btn" id="btn-close-panel" title="Close Panel">
+              <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="term-host"></div>
+      </div>
+    </main>
+
+    <div class="resizer vertical" id="resize-chat"></div>
+    <aside id="chat">
+      <div class="chat-header">
+        <select id="chat-history" title="Chat history"></select>
+        <div class="view-actions">
+          <button class="icon-btn" id="btn-new-chat" title="New Chat (Ctrl+Shift+L)">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-delete-chat" title="Delete Chat">
+            <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-close-chat" title="Close">
+            <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="chat-messages"></div>
+      <div id="chat-composer">
+        <div id="chat-context"></div>
+        <textarea id="chat-input" rows="3" placeholder="Ask anything, @ to mention files (Enter to send, Shift+Enter for newline)" spellcheck="false"></textarea>
+        <div class="composer-bar">
+          <select id="chat-mode" title="Mode">
+            <option value="agent">∞ Agent</option>
+            <option value="ask">💬 Ask</option>
+          </select>
+          <input id="chat-model" list="model-options" placeholder="model" spellcheck="false" title="Model" />
+          <datalist id="model-options"></datalist>
+          <div class="spacer"></div>
+          <button class="icon-btn" id="btn-attach" title="Attach file (@)">
+            <svg viewBox="0 0 24 24"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg>
+          </button>
+          <button class="btn primary small" id="btn-send" title="Send (Enter)">Send</button>
+          <button class="btn danger small hidden" id="btn-stop" title="Stop">Stop</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <footer id="statusbar">
+    <span id="status-folder"></span>
+    <span id="status-msg"></span>
+    <span class="spacer"></span>
+    <span id="status-pos"></span>
+    <span id="status-eol" class="clickable" title="End of line sequence"></span>
+    <span id="status-lang"></span>
+    <span id="status-ai" class="clickable" title="Toggle AI autocomplete"></span>
+    <span id="status-model" class="clickable" title="AI settings"></span>
+  </footer>
+
+  <div id="overlay-root"></div>
+
+  <script src="../../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
