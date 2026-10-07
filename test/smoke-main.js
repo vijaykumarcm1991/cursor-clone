@@ -54,7 +54,8 @@ app.on('browser-window-created', (_e, win) => {
     };
     const srv = await srvPromise;
     try {
-      await sleep(3500);
+      let ready = false;
+      for (let i = 0; i < 120 && !ready; i++) { await sleep(250); ready = await js('!!(window.__app && window.__app.chat && window.__app.root)'); }
       check(await js('!!window.monaco && !!window.__app.editors'), 'Monaco editor loaded');
       check(await js('window.__app.root') === workspace, 'workspace opened from CLI argument');
       check(await js('document.querySelectorAll("#tree .tree-row").length') >= 2, 'explorer shows files');

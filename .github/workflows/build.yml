@@ -15,8 +15,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -25,10 +25,21 @@ jobs:
         run: npm test
       - name: End-to-end test (Linux, virtual display)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:e2e
+        run: xvfb-run -a -s "-screen 0 1600x1000x24" npm run test:e2e
+        env:
+          SMOKE_OUT: ${{ runner.temp }}/e2e
       - name: End-to-end test (Windows)
         if: runner.os == 'Windows'
         run: npm run test:e2e
+        env:
+          SMOKE_OUT: ${{ runner.temp }}/e2e
+      - name: Upload e2e screenshots and log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: e2e-${{ runner.os }}
+          path: ${{ runner.temp }}/e2e
+          if-no-files-found: ignore
 
   package:
     needs: test
@@ -42,8 +53,8 @@ jobs:
             script: dist:win
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -51,7 +62,7 @@ jobs:
       - run: npm run ${{ matrix.script }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: cursor-clone-${{ runner.os }}
           path: |
