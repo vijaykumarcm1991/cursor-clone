@@ -26,7 +26,7 @@ function turnChunks(turn) {
   return chunks;
 }
 
-function start(script = []) {
+function start(script = [], { models = ['mock-b', 'mock-a'] } = {}) {
   const requests = [];
   const queue = [...script];
   const server = http.createServer((req, res) => {
@@ -37,7 +37,7 @@ function start(script = []) {
       requests.push({ url: req.url, headers: req.headers, body: json });
       if (req.url === '/v1/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: [{ id: 'mock-b' }, { id: 'mock-a' }] }));
+        res.end(JSON.stringify({ data: models.map((id) => ({ id, object: 'model' })) }));
         return;
       }
       if (req.url === '/v1/completions') {

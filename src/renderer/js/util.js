@@ -167,7 +167,8 @@ export function modal({ title, body, buttons = [], wide = false, onClose }) {
   }
   if (!buttons.length) foot.remove();
   function onKey(e) {
-    if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+    // An open dropdown (model picker) handles Escape itself.
+    if (e.key === 'Escape' && !document.querySelector('.mp-popup')) { e.stopPropagation(); close(null); }
   }
   document.addEventListener('keydown', onKey, true);
   backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close(null); });

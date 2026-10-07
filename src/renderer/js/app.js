@@ -83,24 +83,42 @@ app.saveSettings = async (partial) => {
   app.editors?.applySettings(app.settings);
   app.terminal?.applyTheme(app.settings.theme);
   app.inline?.updateStatus();
-  updateModelStatus();
+  if (app.chat) app.chat.syncModelPicker();
+  else updateModelStatus();
   return app.settings;
 };
 app.openSettings = () => openSettings(app);
 
 function updateModelStatus() {
   const s = app.settings;
-  const model = $('#chat-model');
-  if (model && document.activeElement !== model) model.value = s.model || '';
-  const dl = $('#model-options');
-  if (dl) {
-    dl.innerHTML = '';
-    for (const m of s.modelList || []) dl.append(h('option', { value: m }));
-  }
+  const model = (app.chat && app.chat.currentModel()) || s.model || 'no model';
   let host = s.baseURL;
   try { host = new URL(s.baseURL).host; } catch { /* keep raw */ }
-  $('#status-model').textContent = `⚙ ${s.model || 'no model'} @ ${host}`;
+  $('#status-model').textContent = `⚙ ${model} @ ${host}`;
 }
+app.updateModelStatus = updateModelStatus;
+
+const cleanIpcError = (e) => String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+/**
+ * Models supported by the API (GET /models), cached per endpoint.
+ * `override` lets the Settings dialog query unsaved connection details.
+ */
+let modelCache = null;
+app.loadModels = async (force = false, override = null) => {
+  const s = { ...app.settings, ...(override || {}) };
+  const key = `${s.baseURL}|${s.apiKey}|${JSON.stringify(s.extraHeaders || {})}`;
+  if (!force && modelCache && modelCache.key === key) return { models: modelCache.models };
+  try {
+    const models = await window.api.ai.models(override || undefined);
+    modelCache = { key, models };
+    if (!override) app.settings = await window.api.settings.set({ modelList: models });
+    return { models };
+  } catch (e) {
+    const sameEndpoint = !override || override.baseURL === app.settings.baseURL;
+    return { models: sameEndpoint ? app.settings.modelList || [] : [], error: cleanIpcError(e) };
+  }
+};
 
 // ------------------------------------------------------------------ workspace
 app.allFiles = async () => {
@@ -204,8 +222,10 @@ const commands = [
   { id: 'newChat', label: 'AI: New Chat', kb: 'Ctrl+Shift+L', run: () => { layout.toggleChat(true); app.chat.newChat(); } },
   { id: 'inlineEdit', label: 'AI: Inline Edit / Generate', kb: 'Ctrl+K', run: () => app.inline.start() },
   { id: 'toggleAutocomplete', label: 'AI: Toggle Tab Autocomplete', run: () => app.inline.toggleAutocomplete() },
-  { id: 'agentMode', label: 'AI: Switch to Agent Mode', run: () => { $('#chat-mode').value = 'agent'; $('#chat-mode').dispatchEvent(new Event('change')); layout.toggleChat(true); } },
-  { id: 'askMode', label: 'AI: Switch to Ask Mode', run: () => { $('#chat-mode').value = 'ask'; $('#chat-mode').dispatchEvent(new Event('change')); layout.toggleChat(true); } },
+  { id: 'agentMode', label: 'AI: Switch to Agent Mode', run: () => { app.chat.setMode('agent'); layout.toggleChat(true); } },
+  { id: 'planMode', label: 'AI: Switch to Plan Mode', run: () => { app.chat.setMode('plan'); layout.toggleChat(true); } },
+  { id: 'askMode', label: 'AI: Switch to Ask Mode', run: () => { app.chat.setMode('ask'); layout.toggleChat(true); } },
+  { id: 'pickModel', label: 'AI: Choose Model for This Chat…', run: () => { layout.toggleChat(true); app.chat.modelPicker.input.focus(); app.chat.modelPicker.open(); } },
   { id: 'terminalToChat', label: 'AI: Add Terminal Output to Chat', run: () => terminalToChat() },
   { id: 'explainFile', label: 'AI: Explain Current File', run: () => quickPrompt('Explain what this file does, its key parts, and anything notable.', 'ask') },
   { id: 'findBugs', label: 'AI: Find Bugs in Current File', run: () => quickPrompt('Review this file for bugs, edge cases and security issues. List concrete problems with line references.', 'ask') },
@@ -288,7 +308,7 @@ function terminalToChat() {
 function quickPrompt(text, mode) {
   if (!app.editors.getActive()) { toast('Open a file first.'); return; }
   layout.toggleChat(true);
-  $('#chat-mode').value = mode;
+  app.chat.setMode(mode);
   app.chat.includeActive = true;
   app.chat.send(text);
 }

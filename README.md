@@ -9,13 +9,15 @@ It's built with Electron, the Monaco editor (the editor core used by VS Code) an
 | | |
 |---|---|
 | **Agent mode** (`Ctrl+L`) | The AI reads, searches, creates, edits and deletes files and runs shell commands until the task is done. You approve each edit (with a diff review) and each command, or you can turn on auto-approve. Every run can be **reverted** in one click. |
+| **Plan mode** | The AI researches your code with read-only tools and writes a step-by-step plan (goal, findings, checklist, risks, verification). Click **▶ Implement plan** to have Agent mode carry it out, or reply to refine the plan first. |
 | **Ask mode** | Q&A about your code with read-only tools. Code blocks have **Copy / Insert / Apply**. Apply merges a partial snippet into the file with the model and shows a diff before writing. |
 | **Inline edit** (`Ctrl+K`) | Select code and describe a change, or generate code at the cursor. The result is applied in place and highlighted. `Ctrl+Enter` accepts, `Esc` rejects, and you can type follow-up instructions to refine it. |
 | **Tab autocomplete** | AI ghost-text completions. It uses either a chat model or a fill-in-the-middle `/completions` endpoint (Ollama, DeepSeek, Codestral, vLLM). |
 | **Context** | The current file and selection are attached automatically. Use `@file` mentions or 📎 to attach more files, add a selection with `Ctrl+L`, or send terminal output to the chat. |
 | **Editor** | Tabs, preview tabs, a file explorer (create, rename, delete to trash), find-in-files, quick open (`Ctrl+P`), a command palette (`Ctrl+Shift+P`), diff views, LF/CRLF handling, light and dark themes. |
 | **Terminal** (`` Ctrl+` ``) | Multiple integrated terminals: PowerShell or cmd on Windows, your `$SHELL` on Linux. |
-| **Chats** | Saved per workspace, with history. |
+| **Models** | Choose any model the API offers straight from the chat panel. The choice is per chat, and new chats use the **default model** set in Settings. Both pickers list `/models` from your server, are searchable and scrollable, and also accept a typed model name for servers without a model list. |
+| **Chats** | Saved per workspace, with history. The chat follows the response as it streams; scroll up to pause, then click **↓ Latest** to jump back. |
 
 ## Quick start
 
@@ -30,7 +32,7 @@ Then open **Settings** (`Ctrl+,`, or click the model name in the status bar):
 
 1. Pick a preset or enter a **Base URL**, for example `https://api.openai.com/v1` or `http://localhost:11434/v1` for Ollama.
 2. Enter your **API key**. Leave it empty for local servers.
-3. Click **Fetch** to list models, choose one, then click **Test connection**.
+3. Click **Fetch models**, pick a **default model** from the list, then click **Test connection**.
 
 You can also set `OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL` as environment variables; they're used as defaults.
 

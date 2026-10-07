@@ -131,17 +131,20 @@
           </button>
         </div>
       </div>
-      <div id="chat-messages"></div>
+      <div id="chat-messages-wrap">
+        <div id="chat-messages"></div>
+        <button class="btn small hidden" id="chat-jump" title="Scroll to latest">↓ Latest</button>
+      </div>
       <div id="chat-composer">
         <div id="chat-context"></div>
         <textarea id="chat-input" rows="3" placeholder="Ask anything, @ to mention files (Enter to send, Shift+Enter for newline)" spellcheck="false"></textarea>
         <div class="composer-bar">
-          <select id="chat-mode" title="Mode">
+          <select id="chat-mode" title="Mode: Agent edits files and runs commands; Plan researches and writes a plan; Ask answers questions">
             <option value="agent">∞ Agent</option>
+            <option value="plan">📋 Plan</option>
             <option value="ask">💬 Ask</option>
           </select>
-          <input id="chat-model" list="model-options" placeholder="model" spellcheck="false" title="Model" />
-          <datalist id="model-options"></datalist>
+          <div id="chat-model" title="Model for this chat"></div>
           <div class="spacer"></div>
           <button class="icon-btn" id="btn-attach" title="Attach file (@)">
             <svg viewBox="0 0 24 24"><path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/></svg>

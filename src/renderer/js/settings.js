@@ -1,5 +1,6 @@
 // Settings dialog: provider / model configuration and editor preferences.
 import { h, modal, toast } from './util.js';
+import { ModelPicker } from './modelpicker.js';
 
 const PRESETS = [
   { name: 'OpenAI', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -31,15 +32,28 @@ export function openSettings(app) {
     if (!p) return;
     f.baseURL.value = p.baseURL;
     if (p.model) f.model.value = p.model;
+    testOut.textContent = '';
   });
 
   const apiKey = h('input', { type: 'password', value: s.apiKey || '', spellcheck: 'false', placeholder: 'sk-… (leave empty for local servers)' });
   f.apiKey = apiKey;
   const showKey = h('button', { class: 'btn small', onclick: () => { apiKey.type = apiKey.type === 'password' ? 'text' : 'password'; } }, 'Show');
 
-  const modelList = h('datalist', { id: 'settings-models' }, (s.modelList || []).map((m) => h('option', { value: m })));
-  text('model', { list: 'settings-models', placeholder: 'e.g. gpt-4o-mini' });
-  text('autocompleteModel', { list: 'settings-models', placeholder: 'defaults to chat model' });
+  // Model lists come from the connection details currently in the form (even if unsaved).
+  const conn = () => {
+    let extraHeaders = {};
+    try { extraHeaders = headers.value.trim() ? JSON.parse(headers.value) : {}; } catch { /* validated on save */ }
+    return { baseURL: f.baseURL.value.trim(), apiKey: apiKey.value.trim(), extraHeaders };
+  };
+  const loadModels = async (force) => {
+    const r = await app.loadModels(force, conn());
+    if (r.models.length) s.modelList = r.models;
+    return r;
+  };
+  const modelPicker = new ModelPicker({ value: s.model, placeholder: 'e.g. gpt-4o-mini', load: loadModels, defaultModel: () => modelPicker.value });
+  const acPicker = new ModelPicker({ value: s.autocompleteModel, placeholder: 'same as default model', load: loadModels, emptyLabel: 'Same as default model', defaultModel: () => modelPicker.value });
+  f.model = modelPicker;
+  f.autocompleteModel = acPicker;
   const headers = h('textarea', { spellcheck: 'false', placeholder: '{"HTTP-Referer": "https://example.com"}' }, Object.keys(s.extraHeaders || {}).length ? JSON.stringify(s.extraHeaders, null, 2) : '');
   const testOut = h('span', { class: 'test-result' });
 
@@ -74,18 +88,16 @@ export function openSettings(app) {
   const fetchModels = async () => {
     testOut.className = 'test-result';
     testOut.textContent = 'Fetching models…';
-    try {
-      const c = current();
-      const list = await window.api.ai.models({ baseURL: c.baseURL, apiKey: c.apiKey, extraHeaders: c.extraHeaders });
-      modelList.innerHTML = '';
-      for (const m of list) modelList.append(h('option', { value: m }));
-      s.modelList = list;
-      testOut.className = 'test-result ok';
-      testOut.textContent = `${list.length} models available — click the Model field to pick one.`;
-    } catch (e) {
+    const r = await loadModels(true);
+    if (r.error) {
       testOut.className = 'test-result err';
-      testOut.textContent = e.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      testOut.textContent = r.error;
+      return;
     }
+    testOut.className = 'test-result ok';
+    testOut.textContent = `${r.models.length} models available — pick the default below.`;
+    modelPicker.input.focus();
+    modelPicker.open();
   };
   const test = async () => {
     testOut.className = 'test-result';
@@ -108,7 +120,8 @@ export function openSettings(app) {
     row('Preset', preset),
     row('Base URL', text('baseURL', { placeholder: 'https://api.openai.com/v1' }), 'Any server implementing /v1/chat/completions (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM, …).'),
     row('API key', h('div', { class: 'inline' }, apiKey, showKey), info.canEncrypt ? 'Stored encrypted with your OS keychain.' : 'OS keychain unavailable: key is stored in plain text in the app settings file.'),
-    row('Model', h('div', { class: 'inline' }, f.model, modelList, h('button', { class: 'btn small', onclick: fetchModels }, 'Fetch'))),
+    row('Default model', h('div', { class: 'inline' }, modelPicker.el, h('button', { class: 'btn small', onclick: fetchModels }, 'Fetch models')),
+      'Used for new chats, inline edits and Apply. You can switch models per chat from the chat panel.'),
     row('', h('div', { class: 'inline' }, h('button', { class: 'btn small', onclick: test }, 'Test connection'), testOut)),
     row('Temperature', num('temperature', { step: '0.1', min: '0', max: '2' })),
     row('Max output tokens', num('maxTokens', { min: '0', step: '256' }), '0 = server default.'),
@@ -118,7 +131,7 @@ export function openSettings(app) {
     row('Auto-run commands', check('autoApproveCommands'), 'When off, you approve each shell command.'),
     h('h3', {}, 'Tab autocomplete'),
     row('Enabled', check('autocompleteEnabled')),
-    row('Autocomplete model', f.autocompleteModel, 'Use a small, fast model for best latency.'),
+    row('Autocomplete model', acPicker.el, 'Use a small, fast model for best latency.'),
     row('Strategy', select('autocompleteMode', [['chat', 'Chat model (works everywhere)'], ['fim', 'Fill-in-the-middle via /completions (Ollama, DeepSeek, Codestral, vLLM)']])),
     row('Delay (ms)', num('autocompleteDelay', { min: '100', step: '50' })),
     h('h3', {}, 'Editor'),

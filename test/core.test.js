@@ -224,6 +224,30 @@ test('ask mode exposes only read-only tools; raw mode sends messages verbatim', 
   }
 });
 
+test('plan mode: read-only tools and a planning system prompt', async () => {
+  const root = tmpdir();
+  fs.writeFileSync(path.join(root, 'a.js'), 'x');
+  const srv = await mock.start([
+    { toolCalls: [{ name: 'write_file', args: { path: 'a.js', content: 'hacked' } }] },
+    { content: '## Plan\n- [ ] 1. do it' },
+  ]);
+  try {
+    const res = await agent.runChat({
+      cfg: { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm' },
+      mode: 'plan', root, messages: [{ role: 'user', content: 'add a feature' }], emit: () => {},
+      requestApproval: async () => { throw new Error('plan mode must not ask to edit'); },
+    });
+    const body = srv.requests[0].body;
+    assert.deepStrictEqual(body.tools.map((t) => t.function.name).sort(), ['find_files', 'list_dir', 'read_file', 'search']);
+    assert.match(body.messages[0].content, /PLAN mode/);
+    // Even if the model tries to write, the tool is unavailable and the file is untouched.
+    assert.match(res.messages.find((m) => m.role === 'tool').content, /Unknown tool|not available/);
+    assert.strictEqual(fs.readFileSync(path.join(root, 'a.js'), 'utf8'), 'x');
+  } finally {
+    await srv.close();
+  }
+});
+
 test('cancelling a run keeps partial output and does not throw', async () => {
   const srv = await mock.start([(req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });

@@ -34,7 +34,7 @@ const srvPromise = mock.start([
   { content: 'I will fix the bug.', toolCalls: [{ name: 'read_file', args: { path: 'src/math.js' } }] },
   { toolCalls: [{ name: 'edit_file', args: { path: 'src/math.js', old_string: 'return a - b;', new_string: 'return a + b;' } }] },
   { content: 'Fixed `add` to use **addition**.\n\n```js src/math.js\nfunction add(a, b) {\n  return a + b;\n}\n```' },
-]).then((srv) => {
+], { models: Array.from({ length: 80 }, (_, i) => `model-${String(i).padStart(3, '0')}`) }).then((srv) => {
   require('../src/main/settings').save({ baseURL: srv.baseURL });
   return srv;
 });
@@ -141,6 +141,105 @@ app.on('browser-window-created', (_e, win) => {
       await js(`window.__app.editors.editor.trigger('test', 'editor.action.inlineSuggest.commit', {}); true`);
       await sleep(200);
       check(await js('window.__app.editors.getActive().model.getLineContent(7)') === '  return a - b;', 'Tab accepts the completion');
+      // ---- Bug 1 & 4: Settings default-model picker is scrollable and selectable
+      await js(`window.__app.saveSettings({ autocompleteEnabled: false }).then(() => true)`);
+      await js('window.__app.openSettings(); true');
+      await sleep(300);
+      await js(`[...document.querySelectorAll('.modal button')].find((b) => b.textContent === 'Fetch models').click(); true`);
+      let popupReady = false;
+      for (let i = 0; i < 20 && !popupReady; i++) { await sleep(200); popupReady = await js(`document.querySelectorAll('.mp-popup .mp-item').length >= 80`); }
+      check(popupReady, 'settings model picker lists all 80 models from /models');
+      const scroll = await js(`(() => { const l = document.querySelector('.mp-popup .mp-list'); const r = { overflow: getComputedStyle(l).overflowY, scrollable: l.scrollHeight > l.clientHeight }; l.scrollTop = 400; r.scrolled = l.scrollTop > 0; return r; })()`);
+      check(scroll.overflow === 'auto' && scroll.scrollable && scroll.scrolled, `model list scrolls (${JSON.stringify(scroll)})`);
+      await js(`[...document.querySelectorAll('.mp-popup .mp-item')].find((e) => e.textContent.startsWith('model-042')).click(); true`);
+      await sleep(100);
+      check(await js(`document.querySelector('.modal .mp-input').value`) === 'model-042', 'clicking a model selects it as default');
+      // typing filters the list
+      await js(`(() => { const i = document.querySelector('.modal .mp-input'); i.focus(); i.value = 'model-07'; i.dispatchEvent(new Event('input')); return true; })()`);
+      await sleep(400);
+      check(await js(`document.querySelectorAll('.mp-popup .mp-item').length`) === 11, 'typing filters the model list (10 matches + "use typed")');
+      await js(`document.querySelector('.modal .mp-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+      check(await js(`!!document.querySelector('.modal') && !document.querySelector('.mp-popup')`), 'Esc closes only the dropdown, not Settings');
+      await js(`[...document.querySelectorAll('.modal-foot button')].find((b) => b.textContent === 'Save').click(); true`);
+      await sleep(400);
+      check(await js('window.__app.settings.model') === 'model-042', 'default model saved from the list');
+      await shot('8-settings-models');
+
+      // ---- Bug 3: choose the model in the chat window itself (per chat)
+      await js(`window.__app.chat.newChat(); true`);
+      await sleep(200);
+      check(await js('window.__app.chat.modelPicker.value') === 'model-042', 'new chat starts with the default model');
+      await js(`(() => { const p = window.__app.chat.modelPicker; p.input.focus(); p.open(); return true; })()`);
+      await sleep(500);
+      const opensUp = await js(`(() => { const p = document.querySelector('.mp-popup'); return p && p.getBoundingClientRect().bottom <= document.querySelector('#chat-model').getBoundingClientRect().top + 4; })()`);
+      check(opensUp, 'chat model dropdown opens upward from the composer');
+      check(await js(`!!document.querySelector('.mp-popup .mp-tag')`), 'default model is tagged in the chat list');
+      await js(`[...document.querySelectorAll('.mp-popup .mp-item')].find((e) => e.textContent.startsWith('model-007')).click(); true`);
+      await sleep(100);
+      check(await js('window.__app.chat.currentModel()') === 'model-007', 'chat model switched from the chat panel');
+      check((await js(`document.querySelector('#status-model').textContent`)).includes('model-007'), 'status bar shows the chat model');
+      srv.queue.push({ content: 'pong' });
+      const before = srv.requests.length;
+      await js(`window.__app.chat.setMode('ask'); window.__app.chat.send('ping'); true`);
+      let got = null;
+      for (let i = 0; i < 30 && !got; i++) { await sleep(200); got = srv.requests.slice(before).find((r) => r.url === '/v1/chat/completions'); }
+      check(got && got.body.model === 'model-007', `chat request uses the chat's model (${got && got.body.model})`);
+      check(await js('window.__app.settings.model') === 'model-042', 'choosing a chat model does not change the default');
+      await sleep(500);
+
+      // ---- Bug 2: Plan mode → Implement plan
+      await js(`window.__app.chat.newChat(); true`);
+      srv.queue.push({ toolCalls: [{ name: 'read_file', args: { path: 'src/math.js' } }] });
+      srv.queue.push({ content: '## Goal\nAdd subtract.\n\n## Plan\n- [ ] 1. Add `sub` to src/math.js\n- [ ] 2. Export it' });
+      const planStart = srv.requests.length;
+      await js(`window.__app.chat.setMode('plan'); window.__app.chat.send('add a subtract function'); true`);
+      let planBtn = false;
+      for (let i = 0; i < 30 && !planBtn; i++) { await sleep(200); planBtn = await js(`!!document.querySelector('#btn-implement-plan')`); }
+      check(planBtn, 'plan response shows "Implement plan" button');
+      const planReq = srv.requests.slice(planStart).find((r) => r.url === '/v1/chat/completions');
+      check(planReq && planReq.body.tools.length === 4 && /PLAN mode/.test(planReq.body.messages[0].content), 'plan mode sends read-only tools + plan prompt');
+      await shot('9-plan');
+      srv.queue.push({ content: 'Implemented.' });
+      const implStart = srv.requests.length;
+      await js(`document.querySelector('#btn-implement-plan').click(); true`);
+      let implReq = null;
+      for (let i = 0; i < 30 && !implReq; i++) { await sleep(200); implReq = srv.requests.slice(implStart).find((r) => r.url === '/v1/chat/completions'); }
+      check(implReq && implReq.body.tools.length === 8 && /Implement the plan above/.test(implReq.body.messages[implReq.body.messages.length - 1].content) && /## Plan/.test(JSON.stringify(implReq.body.messages)),
+        'Implement plan switches to Agent mode with the plan in context');
+      check(await js(`document.querySelector('#chat-mode').value`) === 'agent', 'mode selector switched to Agent');
+      await sleep(600);
+
+      // ---- Bug 5: auto-scroll follows streaming output; scrolling up pauses it
+      await js(`window.__app.chat.newChat(); window.__app.chat.setMode('ask'); true`);
+      const slowStream = (lines, delay) => (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        let i = 0;
+        const t = setInterval(() => {
+          if (i < lines) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `Line ${i} of a long streamed answer that keeps growing.\n\n` } }] })}\n\n`);
+          else { res.write('data: [DONE]\n\n'); res.end(); clearInterval(t); }
+          i++;
+        }, delay);
+      };
+      srv.queue.push(slowStream(80, 40));
+      await js(`window.__app.chat.send('stream please'); true`);
+      const dists = [];
+      for (let i = 0; i < 10; i++) { await sleep(250); dists.push(await js(`(() => { const l = document.querySelector('#chat-messages'); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })()`)); }
+      const overflowed = await js(`(() => { const l = document.querySelector('#chat-messages'); return l.scrollHeight > l.clientHeight * 1.5; })()`);
+      check(overflowed && dists.every((d) => d < 40), `chat stays scrolled to the newest output while streaming (distances ${dists.join(',')})`);
+      await sleep(2000);
+      srv.queue.push(slowStream(60, 40));
+      await js(`window.__app.chat.send('again'); true`);
+      await sleep(400);
+      await js(`(() => { const l = document.querySelector('#chat-messages'); l.dispatchEvent(new WheelEvent('wheel', { deltaY: -300, bubbles: true })); l.scrollTop = 0; return true; })()`);
+      await sleep(800);
+      const upDist = await js(`(() => { const l = document.querySelector('#chat-messages'); return l.scrollTop; })()`);
+      check(upDist < 50, `scrolling up pauses auto-scroll (scrollTop ${upDist})`);
+      check(await js(`!document.querySelector('#chat-jump').classList.contains('hidden')`), '"Latest" button appears while scrolled up');
+      await shot('10-scrolled-up');
+      await js(`document.querySelector('#chat-jump').click(); true`);
+      await sleep(600);
+      check(await js(`(() => { const l = document.querySelector('#chat-messages'); return l.scrollHeight - l.scrollTop - l.clientHeight < 40; })()`), '"Latest" button jumps back and re-pins to the bottom');
+      await sleep(2500);
     } catch (e) {
       check(false, `exception: ${e.stack || e.message}`);
     }

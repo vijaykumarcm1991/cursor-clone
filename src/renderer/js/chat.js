@@ -3,6 +3,9 @@ import { marked } from '../../../node_modules/marked/lib/marked.esm.js';
 import DOMPurify from '../../../node_modules/dompurify/dist/purify.es.mjs';
 import { $, h, basename, relativePath, uid, toast, fuzzy, highlight, diffStat, escapeHtml, samePath, dirname } from './util.js';
 import { startRun, rawCompletion, stripFences } from './aiclient.js';
+import { ModelPicker } from './modelpicker.js';
+
+const IMPLEMENT_PLAN_PROMPT = 'Implement the plan above. Work through the steps in order, then verify the result (build, tests or a quick run where practical) and summarize what changed.';
 
 marked.use({
   gfm: true,
@@ -40,7 +43,6 @@ export class Chat {
     this.list = $('#chat-messages');
     this.input = $('#chat-input');
     this.modeSel = $('#chat-mode');
-    this.modelInput = $('#chat-model');
     this.ctxEl = $('#chat-context');
     this.historySel = $('#chat-history');
     this.chats = [];
@@ -51,9 +53,21 @@ export class Chat {
     this.run = null;
     this.mention = null;
 
-    try { this.modeSel.value = localStorage.getItem('chat.mode') || 'agent'; } catch { /* ignore */ }
-    this.modeSel.addEventListener('change', () => { try { localStorage.setItem('chat.mode', this.modeSel.value); } catch { /* ignore */ } });
-    this.modelInput.addEventListener('change', () => this.app.saveSettings({ model: this.modelInput.value.trim() }));
+    let savedMode = 'agent';
+    try { savedMode = localStorage.getItem('chat.mode') || 'agent'; } catch { /* ignore */ }
+    this.setMode(savedMode);
+    this.modeSel.addEventListener('change', () => this.setMode(this.modeSel.value));
+    // Per-chat model; new chats use the default model from Settings.
+    this.modelPicker = new ModelPicker({
+      className: 'compact',
+      placeholder: 'model',
+      value: app.settings.model,
+      load: (force) => this.app.loadModels(force),
+      defaultModel: () => this.app.settings.model,
+      onChange: (v) => this.setChatModel(v),
+    });
+    $('#chat-model').append(this.modelPicker.el);
+    this.initAutoScroll();
     this.input.addEventListener('keydown', (e) => this.onKey(e));
     this.input.addEventListener('input', () => { this.autosize(); this.updateMention(); });
     $('#btn-send').onclick = () => this.send();
@@ -93,7 +107,73 @@ export class Chat {
   load(id) {
     this.current = this.chats.find((c) => c.id === id) || this.chats[0];
     this.renderHistory();
+    this.syncModelPicker();
     this.renderMessages();
+  }
+
+  // ---------------------------------------------------------------- mode & model
+  setMode(mode) {
+    if (![...this.modeSel.options].some((o) => o.value === mode)) mode = 'agent';
+    this.modeSel.value = mode;
+    try { localStorage.setItem('chat.mode', mode); } catch { /* ignore */ }
+  }
+
+  /** Model used by the current chat (its own choice, else the default from Settings). */
+  currentModel() {
+    return (this.current && this.current.model) || this.app.settings.model || '';
+  }
+
+  setChatModel(v) {
+    if (!this.current) return;
+    v = (v || '').trim();
+    this.current.model = v && v !== this.app.settings.model ? v : null;
+    if (!v) this.modelPicker.value = this.currentModel();
+    this.persist();
+    this.app.updateModelStatus();
+  }
+
+  syncModelPicker() {
+    if (document.activeElement !== this.modelPicker.input) this.modelPicker.value = this.currentModel();
+    this.app.updateModelStatus?.();
+  }
+
+  // ---------------------------------------------------------------- auto-scroll
+  // Stay pinned to the newest output while streaming, unless the user scrolls up.
+  initAutoScroll() {
+    const l = this.list;
+    this.stick = true;
+    this.jumpBtn = $('#chat-jump');
+    this.jumpBtn.onclick = () => this.scrollToBottom(true);
+    const markUser = () => { this.userScrollAt = Date.now(); };
+    l.addEventListener('wheel', (e) => { markUser(); if (e.deltaY < 0) { this.stick = false; this.updateJump(); } }, { passive: true });
+    l.addEventListener('pointerdown', markUser);
+    l.addEventListener('touchmove', markUser, { passive: true });
+    l.addEventListener('keydown', markUser);
+    l.addEventListener('scroll', () => {
+      const dist = l.scrollHeight - l.scrollTop - l.clientHeight;
+      if (dist < 30) this.stick = true;
+      else if (Date.now() - (this.userScrollAt || 0) < 1000) this.stick = false;
+      this.updateJump();
+    });
+    let pending = false;
+    const follow = () => {
+      if (!this.stick || pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        if (this.stick) l.scrollTop = l.scrollHeight;
+        this.updateJump();
+      });
+    };
+    // Any new/changed content (streamed text, tool output, highlighting) keeps us at the bottom.
+    new MutationObserver(follow).observe(l, { childList: true, subtree: true, characterData: true });
+    new ResizeObserver(follow).observe(l);
+  }
+
+  updateJump() {
+    const l = this.list;
+    const dist = l.scrollHeight - l.scrollTop - l.clientHeight;
+    this.jumpBtn.classList.toggle('hidden', this.stick || dist < 60);
   }
 
   newChat() {
@@ -290,12 +370,14 @@ export class Chat {
       return;
     }
     const mode = this.modeSel.value;
+    const model = this.currentModel();
     const context = this.buildContext();
     const chat = this.current;
     const userMsg = {
       role: 'user',
       content: text,
       _display: text,
+      _mode: mode,
       _files: [
         ...(context.activeFile ? [`📄 ${basename(context.activeFile.path)}`] : []),
         ...context.snippets.map((sn) => `✂ ${basename(sn.path)} L${sn.startLine}-${sn.endLine}`),
@@ -322,7 +404,7 @@ export class Chat {
       messages: apiMessages,
       context,
       overlays: this.app.editors.overlays(),
-      cfg: this.modelInput.value.trim() ? { model: this.modelInput.value.trim() } : undefined,
+      cfg: model ? { model } : undefined,
     }, (ev) => live.onEvent(ev));
     let res;
     try {
@@ -345,7 +427,7 @@ export class Chat {
     this.repairHistory(chat);
     chat.updated = Date.now();
     this.persist();
-    this.renderMessages();
+    this.renderMessages(this.stick ? 'bottom' : 'keep');
   }
 
   repairHistory(chat) {
@@ -363,15 +445,18 @@ export class Chat {
   }
 
   // ---------------------------------------------------------------- rendering
-  renderMessages() {
+  /** @param {'bottom'|'keep'} [scroll] keep = preserve the user's scroll position */
+  renderMessages(scroll = 'bottom') {
     const msgs = this.current ? this.current.messages : [];
+    const keepTop = this.list.scrollTop;
     this.list.innerHTML = '';
     if (!msgs.length) {
       const s = this.app.settings;
       this.list.append(h('div', { class: 'chat-empty' },
         h('h3', {}, 'AI Chat'),
         h('p', {}, 'Agent mode can read, edit and create files and run commands (with your approval). Ask mode answers questions about your code.'),
-        h('p', { class: 'muted' }, `Model: ${this.modelInput.value || s.model} · ${s.baseURL}`),
+        h('p', { class: 'muted' }, `Model: ${this.currentModel() || 'not set'} · ${s.baseURL}`),
+        h('p', { class: 'muted' }, 'Plan mode researches your code and proposes a step-by-step plan you can then implement with one click.'),
         h('p', { class: 'muted' }, 'Tip: select code and press Ctrl+L to add it here, or Ctrl+K to edit it inline.')));
       return;
     }
@@ -395,18 +480,40 @@ export class Chat {
       } else if (m.role === 'ui' && m.kind === 'changes') this.list.append(this.changesEl(m));
       else if (m.role === 'ui' && m.kind === 'error') this.list.append(h('div', { class: 'error-box' }, m.text));
     }
-    this.scrollToBottom(true);
+    const actions = this.planActions(msgs);
+    if (actions) this.list.append(actions);
+    if (scroll === 'keep') { this.list.scrollTop = keepTop; this.updateJump(); } else this.scrollToBottom(true);
+  }
+
+  /** After a finished Plan-mode answer, offer to implement it. */
+  planActions(msgs) {
+    if (this.run) return null;
+    const last = [...msgs].reverse().find((m) => m.role !== 'ui');
+    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+    if (!last || last.role !== 'assistant' || last.tool_calls || !last.content || !lastUser || lastUser._mode !== 'plan') return null;
+    return h('div', { class: 'plan-actions' },
+      h('button', { class: 'btn primary small', id: 'btn-implement-plan', title: 'Switch to Agent mode and implement this plan', onclick: () => this.implementPlan() }, '▶ Implement plan'),
+      h('span', { class: 'muted' }, 'or reply to refine it'));
+  }
+
+  implementPlan() {
+    if (this.run) return;
+    this.setMode('agent');
+    this.send(IMPLEMENT_PLAN_PROMPT);
   }
 
   userEl(m) {
+    const modeLabel = { agent: 'Agent', plan: 'Plan', ask: 'Ask' }[m._mode];
     return h('div', { class: 'msg user' },
+      modeLabel ? h('span', { class: 'mode-tag' }, modeLabel) : null,
       m._files && m._files.length ? h('div', { class: 'ctx-files' }, m._files.map((f) => h('span', { class: 'chip' }, h('span', { class: 'label' }, f)))) : null,
       h('div', { class: 'bubble' }, m._display ?? m.content));
   }
 
   scrollToBottom(force = false) {
-    const l = this.list;
-    if (force || l.scrollHeight - l.scrollTop - l.clientHeight < 120) l.scrollTop = l.scrollHeight;
+    if (force) this.stick = true;
+    if (this.stick) this.list.scrollTop = this.list.scrollHeight;
+    this.updateJump();
   }
 
   renderMarkdown(el, text, final) {

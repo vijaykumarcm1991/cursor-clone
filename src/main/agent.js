@@ -133,6 +133,20 @@ async function buildSystemPrompt({ mode, root }) {
       'The user may reject a proposed change or command; if so, adapt to their feedback.',
       'Finish with a brief summary of what you changed.',
     );
+  } else if (mode === 'plan') {
+    lines.push(
+      '',
+      'You are in PLAN mode. Do NOT modify files or run commands; you only have read-only tools.',
+      'First research the request: explore the relevant files with the tools so the plan is grounded in the actual code.',
+      'If the request is ambiguous in a way that changes the plan, list your assumptions (or ask up to 3 short clarifying questions at the end).',
+      'Then write the plan in Markdown with these sections:',
+      '## Goal — one or two sentences.',
+      '## Findings — the relevant files/functions and how they work today (cite paths).',
+      '## Plan — a numbered checklist (- [ ] 1. ...) of concrete, ordered steps; each names the file(s) to change and what to change. Include new files and tests.',
+      '## Risks & open questions — edge cases, migrations, anything needing a decision.',
+      '## Verification — how to confirm it works (commands to run, behaviour to check).',
+      'Keep code to short illustrative snippets; the full implementation happens later when the user asks you to implement the plan in Agent mode.',
+    );
   } else {
     lines.push(
       '',
@@ -244,6 +258,10 @@ async function runChat(o) {
     }
     const name = call.function.name;
     emit({ type: 'tool_start', id: call.id, name, args });
+    // Only tools offered for this mode may run (models sometimes call tools they weren't given).
+    if (!tools.some((t) => t.function.name === name)) {
+      return { ok: false, output: `Tool "${name}" is not available in ${mode} mode.${mode !== 'agent' ? ' Only read-only tools can be used; describe the change instead.' : ''}` };
+    }
     const prefs = o.prefs ? o.prefs() : cfg; // read live so "Always allow" applies mid-run
     const autoEdits = !!prefs.autoApproveEdits;
     const autoCmds = !!prefs.autoApproveCommands;
