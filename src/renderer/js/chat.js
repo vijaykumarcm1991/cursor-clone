@@ -4,6 +4,7 @@ import DOMPurify from '../../../node_modules/dompurify/dist/purify.es.mjs';
 import { $, h, basename, relativePath, uid, toast, fuzzy, highlight, diffStat, escapeHtml, samePath, dirname } from './util.js';
 import { startRun, rawCompletion, stripFences } from './aiclient.js';
 import { ModelPicker } from './modelpicker.js';
+import { parseChoices, composeReply } from './choices.mjs';
 
 const IMPLEMENT_PLAN_PROMPT = 'Implement the plan above. Work through the steps in order, then verify the result (build, tests or a quick run where practical) and summarize what changed.';
 
@@ -19,13 +20,73 @@ marked.use({
 });
 
 const TOOL_LABEL = {
-  list_dir: 'List', read_file: 'Read', search: 'Search', find_files: 'Find', write_file: 'Write', edit_file: 'Edit', delete_file: 'Delete', run_command: 'Run',
+  list_dir: 'List', read_file: 'Read', search: 'Search', find_files: 'Find', write_file: 'Write', edit_file: 'Edit', delete_file: 'Delete', run_command: 'Run', ask_user: 'Question',
 };
+
+let formSeq = 0;
+/**
+ * Multiple-choice form. Interactive when `onSubmit` is given; read-only when `answers` is given.
+ * Answers: [{ selected: string[], other?: string }] per question.
+ */
+function questionForm(questions, { answers = null, submitLabel = 'Submit', onSubmit, onSkip, skipLabel = 'Skip' } = {}) {
+  const readonly = !!answers;
+  const seq = ++formSeq;
+  const form = h('div', { class: `qform${readonly ? ' readonly' : ''}` });
+  const state = questions.map(() => ({ selected: new Set(), other: '' }));
+  const submit = h('button', { class: 'btn primary small qsubmit', type: 'button' }, submitLabel);
+  const refresh = () => { submit.disabled = !state.some((st) => st.selected.size || st.other.trim()); };
+  questions.forEach((q, qi) => {
+    const multi = !!q.multiSelect;
+    const given = (answers && answers[qi]) || {};
+    const block = h('div', { class: 'qblock' },
+      h('div', { class: 'qtitle' }, questions.length > 1 ? `${qi + 1}. ${q.question}` : q.question, multi ? h('span', { class: 'muted' }, '  (select any)') : null));
+    const other = h('input', { type: 'text', class: 'text-input qother', placeholder: multi ? 'Add another answer…' : 'Other…', spellcheck: 'false' });
+    q.options.forEach((opt, oi) => {
+      const input = h('input', { type: multi ? 'checkbox' : 'radio', name: `q${seq}_${qi}`, value: opt });
+      if (readonly) {
+        input.checked = (given.selected || []).includes(opt);
+        input.disabled = true;
+      }
+      input.addEventListener('change', () => {
+        if (!multi) { state[qi].selected.clear(); state[qi].other = ''; other.value = ''; }
+        if (input.checked) state[qi].selected.add(opt); else state[qi].selected.delete(opt);
+        refresh();
+      });
+      block.append(h('label', { class: 'qopt' }, input, h('span', { class: 'qkey' }, String.fromCharCode(65 + oi)), h('span', { class: 'qtext' }, opt)));
+    });
+    if (readonly) {
+      if (given.other) { other.value = given.other; other.disabled = true; block.append(other); }
+    } else {
+      other.addEventListener('input', () => {
+        state[qi].other = other.value;
+        if (!multi && other.value.trim()) {
+          state[qi].selected.clear();
+          block.querySelectorAll('input[type=radio]').forEach((r) => { r.checked = false; });
+        }
+        refresh();
+      });
+      other.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !submit.disabled) { e.preventDefault(); submit.click(); } });
+      block.append(other);
+    }
+    form.append(block);
+  });
+  if (!readonly) {
+    submit.addEventListener('click', () => {
+      if (submit.disabled) return;
+      form.querySelectorAll('input, button').forEach((el) => { el.disabled = true; });
+      onSubmit(state.map((st, i) => ({ selected: questions[i].options.filter((o) => st.selected.has(o)), ...(st.other.trim() ? { other: st.other.trim() } : {}) })));
+    });
+    form.append(h('div', { class: 'row' }, submit, onSkip ? h('button', { class: 'btn small', type: 'button', onclick: onSkip }, skipLabel) : null));
+    refresh();
+  }
+  return form;
+}
 
 function toolArgSummary(name, args) {
   if (!args) return '';
   switch (name) {
     case 'run_command': return args.command || '';
+    case 'ask_user': return (args.questions || []).map((q) => q && q.question).filter(Boolean).join(' · ');
     case 'search': return `${args.query || ''}${args.include ? `  in ${args.include}` : ''}`;
     case 'find_files': return args.pattern || '';
     case 'read_file': return `${args.path || ''}${args.start_line ? `:${args.start_line}-${args.end_line || ''}` : ''}`;
@@ -473,7 +534,8 @@ export class Chat {
         for (const c of m.tool_calls || []) {
           const card = this.toolCard(c.id, c.function.name, parseArgs(c.function.arguments));
           const r = toolResults.get(c.id);
-          if (r) this.finishToolCard(card, { ok: !/^(Error|The user rejected|The user declined|Not executed|Cancelled)/.test(r.content || ''), output: r.content });
+          if (r) this.finishToolCard(card, { ok: !/^(Error|The user rejected|The user declined|The user dismissed|Not executed|Cancelled)/.test(r.content || ''), output: r.content });
+          if (r && r._answers) card.append(questionForm(r._answers.questions, { answers: r._answers.answers }));
           el.append(card);
         }
         this.list.append(el);
@@ -482,6 +544,8 @@ export class Chat {
     }
     const actions = this.planActions(msgs);
     if (actions) this.list.append(actions);
+    const quick = this.quickReply(msgs);
+    if (quick) this.list.append(quick);
     if (scroll === 'keep') { this.list.scrollTop = keepTop; this.updateJump(); } else this.scrollToBottom(true);
   }
 
@@ -494,6 +558,21 @@ export class Chat {
     return h('div', { class: 'plan-actions' },
       h('button', { class: 'btn primary small', id: 'btn-implement-plan', title: 'Switch to Agent mode and implement this plan', onclick: () => this.implementPlan() }, '▶ Implement plan'),
       h('span', { class: 'muted' }, 'or reply to refine it'));
+  }
+
+  /** Plain-text multiple-choice questions at the end of the last reply → clickable answers. */
+  quickReply(msgs) {
+    if (this.run) return null;
+    const last = [...msgs].reverse().find((m) => m.role !== 'ui');
+    if (!last || last.role !== 'assistant' || last.tool_calls || !last.content) return null;
+    const questions = parseChoices(last.content);
+    if (!questions.length) return null;
+    return h('div', { class: 'quick-reply' },
+      h('div', { class: 'muted qhint' }, questions.length > 1 ? 'Answer the questions here, or type a reply below' : 'Pick an answer, or type a reply below'),
+      questionForm(questions, {
+        submitLabel: questions.length > 1 ? 'Send answers' : 'Send answer',
+        onSubmit: (answers) => this.send(composeReply(questions, answers)),
+      }));
   }
 
   implementPlan() {
@@ -803,6 +882,23 @@ class LiveRun {
       box.remove();
       window.api.ai.approve(ev.approvalId, { approved, feedback: feedback.value.trim() || undefined, ...extra });
     };
+    if (ev.kind === 'question') {
+      box.classList.add('question');
+      box.append(questionForm(ev.questions, {
+        submitLabel: 'Submit answers',
+        onSubmit: (answers) => {
+          decide(true, { answers });
+          if (card) card.append(questionForm(ev.questions, { answers }));
+        },
+        onSkip: () => decide(false),
+        skipLabel: 'Skip — let the AI decide',
+      }));
+      if (card) card.append(box); else this.el.append(box);
+      this.thinking.remove();
+      this.chat.scrollToBottom(true);
+      setTimeout(() => box.querySelector('input')?.focus({ preventScroll: true }), 0);
+      return;
+    }
     if (ev.kind === 'command') {
       box.append(
         h('div', {}, `Run command in `, h('code', {}, ev.cwd || '.'), '?'),

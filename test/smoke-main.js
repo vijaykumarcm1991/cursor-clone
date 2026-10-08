@@ -90,7 +90,7 @@ app.on('browser-window-created', (_e, win) => {
       // Requests carried system prompt + tools + context
       const first = srv.requests.find((r) => r.url === '/v1/chat/completions');
       check(first && first.body.model === 'mock-model', 'request used configured model');
-      check(first && first.body.tools && first.body.tools.length === 8, 'agent tools sent');
+      check(first && first.body.tools && first.body.tools.length === 9, 'agent tools sent');
       check(first && /<context>/.test(first.body.messages[first.body.messages.length - 1].content), 'active file context attached');
 
       // Terminal
@@ -197,14 +197,14 @@ app.on('browser-window-created', (_e, win) => {
       for (let i = 0; i < 30 && !planBtn; i++) { await sleep(200); planBtn = await js(`!!document.querySelector('#btn-implement-plan')`); }
       check(planBtn, 'plan response shows "Implement plan" button');
       const planReq = srv.requests.slice(planStart).find((r) => r.url === '/v1/chat/completions');
-      check(planReq && planReq.body.tools.length === 4 && /PLAN mode/.test(planReq.body.messages[0].content), 'plan mode sends read-only tools + plan prompt');
+      check(planReq && planReq.body.tools.length === 5 && /PLAN mode/.test(planReq.body.messages[0].content), 'plan mode sends read-only tools + plan prompt');
       await shot('9-plan');
       srv.queue.push({ content: 'Implemented.' });
       const implStart = srv.requests.length;
       await js(`document.querySelector('#btn-implement-plan').click(); true`);
       let implReq = null;
       for (let i = 0; i < 30 && !implReq; i++) { await sleep(200); implReq = srv.requests.slice(implStart).find((r) => r.url === '/v1/chat/completions'); }
-      check(implReq && implReq.body.tools.length === 8 && /Implement the plan above/.test(implReq.body.messages[implReq.body.messages.length - 1].content) && /## Plan/.test(JSON.stringify(implReq.body.messages)),
+      check(implReq && implReq.body.tools.length === 9 && /Implement the plan above/.test(implReq.body.messages[implReq.body.messages.length - 1].content) && /## Plan/.test(JSON.stringify(implReq.body.messages)),
         'Implement plan switches to Agent mode with the plan in context');
       check(await js(`document.querySelector('#chat-mode').value`) === 'agent', 'mode selector switched to Agent');
       await sleep(600);
@@ -240,6 +240,60 @@ app.on('browser-window-created', (_e, win) => {
       await sleep(600);
       check(await js(`(() => { const l = document.querySelector('#chat-messages'); return l.scrollHeight - l.scrollTop - l.clientHeight < 40; })()`), '"Latest" button jumps back and re-pins to the bottom');
       await sleep(2500);
+      // ---- Multiple-choice questions: ask_user tool
+      await js(`window.__app.chat.newChat(); window.__app.chat.setMode('agent'); true`);
+      srv.queue.push({ toolCalls: [{ name: 'ask_user', args: { questions: [
+        { question: 'Which database should we use?', options: ['PostgreSQL', 'SQLite', 'MySQL'] },
+        { question: 'Which features do you need?', options: ['Auth', 'Search', 'Export'], multi_select: true },
+      ] } }] });
+      srv.queue.push({ content: 'Got it: SQLite with Auth and Export.' });
+      const askStart = srv.requests.length;
+      await js(`window.__app.chat.send('set up the backend'); true`);
+      let qCard = false;
+      for (let i = 0; i < 30 && !qCard; i++) { await sleep(200); qCard = await js(`!!document.querySelector('.approval.question .qform')`); }
+      check(qCard, 'ask_user shows a multiple-choice card');
+      check(await js(`document.querySelectorAll('.approval.question input[type=radio]').length === 3 && document.querySelectorAll('.approval.question input[type=checkbox]').length === 3`), 'single-select uses radios, multi-select uses checkboxes');
+      check(await js(`document.querySelector('.approval.question .qsubmit').disabled`), 'submit disabled until something is chosen');
+      await shot('11-ask-user');
+      await js(`(() => {
+        const labels = [...document.querySelectorAll('.approval.question .qopt')];
+        const pick = (t) => labels.find((l) => l.textContent.endsWith(t)).querySelector('input').click();
+        pick('SQLite'); pick('Auth'); pick('Export');
+        const other = document.querySelectorAll('.approval.question .qother')[1];
+        other.value = 'Dark mode'; other.dispatchEvent(new Event('input'));
+        document.querySelector('.approval.question .qsubmit').click();
+        return true;
+      })()`);
+      let followUp = null;
+      for (let i = 0; i < 30 && !followUp; i++) { await sleep(200); followUp = srv.requests.slice(askStart).filter((r) => r.url === '/v1/chat/completions')[1]; }
+      const toolAns = followUp && followUp.body.messages.find((m) => m.role === 'tool');
+      check(toolAns && /Which database should we use\?\s+Answer: SQLite/.test(toolAns.content) && /Answer: Auth; Export; Dark mode/.test(toolAns.content), 'selected answers are returned to the AI');
+      await sleep(600);
+      check(await js(`(() => { const f = document.querySelector('.tool .qform.readonly'); return !!f && [...f.querySelectorAll('input:checked')].map((i) => i.value).join(',') === 'SQLite,Auth,Export'; })()`), 'answered questions stay visible (read-only) in history');
+
+      // ---- Multiple-choice questions written as plain text → quick reply
+      await js(`window.__app.chat.newChat(); window.__app.chat.setMode('ask'); true`);
+      srv.queue.push({ content: 'A couple of questions first:\n\n1. **Which test framework do you prefer?**\n   A) Jest\n   B) Vitest\n   C) Mocha\n\n2. Should I add CI?\n   A) Yes, GitHub Actions\n   B) No\n\nLet me know!' });
+      await js(`window.__app.chat.send('add tests'); true`);
+      let quick = false;
+      for (let i = 0; i < 30 && !quick; i++) { await sleep(200); quick = await js(`document.querySelectorAll('.quick-reply .qblock').length === 2`); }
+      check(quick, 'plain-text MCQs become clickable answers');
+      await shot('12-quick-reply');
+      srv.queue.push({ content: 'Great, Vitest with GitHub Actions.' });
+      const qrStart = srv.requests.length;
+      await js(`(() => {
+        const labels = [...document.querySelectorAll('.quick-reply .qopt')];
+        labels.find((l) => l.textContent.endsWith('Vitest')).querySelector('input').click();
+        labels.find((l) => l.textContent.endsWith('Yes, GitHub Actions')).querySelector('input').click();
+        document.querySelector('.quick-reply .qsubmit').click();
+        return true;
+      })()`);
+      let qrReq = null;
+      for (let i = 0; i < 30 && !qrReq; i++) { await sleep(200); qrReq = srv.requests.slice(qrStart).find((r) => r.url === '/v1/chat/completions'); }
+      const lastUser = qrReq && qrReq.body.messages.filter((m) => m.role === 'user').pop();
+      check(lastUser && /1\. Which test framework do you prefer\?\s+→ Vitest/.test(lastUser.content) && /2\. Should I add CI\?\s+→ Yes, GitHub Actions/.test(lastUser.content), 'quick reply sends the chosen answers');
+      await sleep(600);
+      check(await js(`!document.querySelector('.quick-reply')`), 'quick reply disappears once answered');
     } catch (e) {
       check(false, `exception: ${e.stack || e.message}`);
     }

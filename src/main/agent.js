@@ -51,8 +51,43 @@ const TOOLS = {
   }, ['command']),
 };
 
-const READ_ONLY_TOOLS = ['list_dir', 'read_file', 'search', 'find_files'];
+TOOLS.ask_user = fn('ask_user', 'Ask the user one or more multiple-choice questions and wait for their answers. Use this whenever you need the user to pick between options or clarify requirements, instead of writing the options as plain text. The user can also type a custom answer.', {
+  questions: {
+    type: 'array',
+    description: 'Questions to ask (1-6).',
+    items: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question, ending with a question mark.' },
+        options: { type: 'array', items: { type: 'string' }, description: '2-8 short, distinct answer options. Do not add an "Other" option; one is provided automatically.' },
+        multi_select: { type: 'boolean', description: 'Allow selecting more than one option. Default false.' },
+      },
+      required: ['question', 'options'],
+    },
+  },
+}, ['questions']);
+
+const READ_ONLY_TOOLS = ['list_dir', 'read_file', 'search', 'find_files', 'ask_user'];
 const AGENT_TOOLS = Object.keys(TOOLS);
+const NO_FOLDER_TOOLS = ['ask_user'];
+
+/** Validate/normalize ask_user arguments coming from the model. */
+function normalizeQuestions(args) {
+  const qs = Array.isArray(args && args.questions) ? args.questions : [];
+  return qs.slice(0, 6).map((q) => ({
+    question: String((q && q.question) || '').trim(),
+    options: (Array.isArray(q && q.options) ? q.options : []).map((o) => String(typeof o === 'object' && o ? o.label || o.text || JSON.stringify(o) : o).trim()).filter(Boolean).slice(0, 8),
+    multiSelect: !!(q && (q.multi_select || q.multiSelect)),
+  })).filter((q) => q.question && q.options.length >= 1);
+}
+
+function formatAnswers(questions, answers) {
+  return questions.map((q, i) => {
+    const a = answers[i] || {};
+    const picked = [...(a.selected || []), ...(a.other ? [a.other] : [])];
+    return `${i + 1}. ${q.question}\n   Answer: ${picked.length ? picked.join('; ') : '(no answer)'}`;
+  }).join('\n');
+}
 
 function clip(s, n = MAX_TOOL_OUTPUT) {
   s = String(s ?? '');
@@ -138,7 +173,7 @@ async function buildSystemPrompt({ mode, root }) {
       '',
       'You are in PLAN mode. Do NOT modify files or run commands; you only have read-only tools.',
       'First research the request: explore the relevant files with the tools so the plan is grounded in the actual code.',
-      'If the request is ambiguous in a way that changes the plan, list your assumptions (or ask up to 3 short clarifying questions at the end).',
+      'If the request is ambiguous in a way that changes the plan, call the ask_user tool with short multiple-choice questions before writing the plan, or state your assumptions.',
       'Then write the plan in Markdown with these sections:',
       '## Goal — one or two sentences.',
       '## Findings — the relevant files/functions and how they work today (cite paths).',
@@ -154,7 +189,10 @@ async function buildSystemPrompt({ mode, root }) {
       'When suggesting code changes, show them as fenced code blocks with the language and, on the opening fence, the file path, e.g. ```ts src/app.ts',
     );
   }
-  lines.push('Be concise. Format answers in Markdown.');
+  lines.push(
+    'When you need the user to choose between options or answer clarifying questions, call the ask_user tool (multiple choice) instead of listing the options as plain text; you will receive the answers and can continue.',
+    'Be concise. Format answers in Markdown.',
+  );
   return lines.join('\n');
 }
 
@@ -233,7 +271,7 @@ async function runChat(o) {
       newMessages.push(last);
     }
     convo = [{ role: 'system', content: await buildSystemPrompt({ mode, root }) }, ...history];
-    if (root) tools = (mode === 'agent' ? AGENT_TOOLS : READ_ONLY_TOOLS).map((t) => TOOLS[t]);
+    tools = (root ? (mode === 'agent' ? AGENT_TOOLS : READ_ONLY_TOOLS) : NO_FOLDER_TOOLS).map((t) => TOOLS[t]);
   }
 
   const recordChange = async (abs) => {
@@ -341,6 +379,15 @@ async function runChat(o) {
           emit({ type: 'file_deleted', path: abs });
           return { ok: true, output: `Deleted ${rel}.` };
         }
+        case 'ask_user': {
+          const questions = normalizeQuestions(args);
+          if (!questions.length) return { ok: false, output: 'ask_user needs at least one question with options.' };
+          const res = await requestApproval({ kind: 'question', toolCallId: call.id, questions });
+          if (!res.approved || !Array.isArray(res.answers)) {
+            return { ok: false, rejected: true, output: `The user dismissed the questions without answering.${res.feedback ? ` Feedback: ${res.feedback}` : ''} Proceed with reasonable assumptions and state them.` };
+          }
+          return { ok: true, output: `The user answered:\n${formatAnswers(questions, res.answers)}`, answers: { questions, answers: res.answers } };
+        }
         case 'run_command': {
           const cwd = ws.resolveIn(root, args.cwd || '.');
           const command = String(args.command || '');
@@ -383,7 +430,7 @@ async function runChat(o) {
         }
       } catch (e) {
         // Models/servers without tool support: fall back to plain chat in ask mode.
-        if (toolsSupported && tools.length && mode !== 'agent' && e.status && e.status >= 400 && e.status < 500 && /tool|function/i.test(e.message)) {
+        if (toolsSupported && tools.length && (mode !== 'agent' || !root) && e.status && e.status >= 400 && e.status < 500 && /tool|function/i.test(e.message)) {
           toolsSupported = false;
           iterations--;
           continue;
@@ -407,6 +454,7 @@ async function runChat(o) {
         const result = await execTool(call);
         emit({ type: 'tool_end', id: call.id, ok: result.ok, rejected: !!result.rejected, output: result.output });
         const msg = { role: 'tool', tool_call_id: call.id, content: result.output };
+        if (result.answers) msg._answers = result.answers; // UI-only; stripped before sending
         convo.push(msg);
         newMessages.push(msg);
       }
@@ -430,4 +478,4 @@ function summarizeChanges(root, changes) {
   return [...changes.entries()].map(([p, c]) => ({ path: p, rel: root ? ws.relPath(root, p) : p, before: c.before }));
 }
 
-module.exports = { runChat, applyEdit, numberLines, buildSystemPrompt, TOOLS };
+module.exports = { runChat, applyEdit, numberLines, buildSystemPrompt, normalizeQuestions, TOOLS };

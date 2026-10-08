@@ -16,6 +16,7 @@ It's built with Electron, the Monaco editor (the editor core used by VS Code) an
 | **Context** | The current file and selection are attached automatically. Use `@file` mentions or 📎 to attach more files, add a selection with `Ctrl+L`, or send terminal output to the chat. |
 | **Editor** | Tabs, preview tabs, a file explorer (create, rename, delete to trash), find-in-files, quick open (`Ctrl+P`), a command palette (`Ctrl+Shift+P`), diff views, LF/CRLF handling, light and dark themes. |
 | **Terminal** (`` Ctrl+` ``) | Multiple integrated terminals: PowerShell or cmd on Windows, your `$SHELL` on Linux. |
+| **Multiple-choice answers** | When the AI needs a decision, it asks with clickable options: radio buttons, checkboxes for "select all that apply", and an "Other" field. It does this through an `ask_user` tool, and your answers go straight back so it can continue the task. Multiple-choice questions written as plain text (for example `A) … B) …` at the end of a reply) also become a clickable answer form, so this works even with models or servers that don't support tools. |
 | **Models** | Choose any model the API offers straight from the chat panel. The choice is per chat, and new chats use the **default model** set in Settings. Both pickers list `/models` from your server, are searchable and scrollable, and also accept a typed model name for servers without a model list. |
 | **Chats** | Saved per workspace, with history. The chat follows the response as it streams; scroll up to pause, then click **↓ Latest** to jump back. |
 

@@ -214,7 +214,7 @@ test('ask mode exposes only read-only tools; raw mode sends messages verbatim', 
     const cfg = { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm' };
     await agent.runChat({ cfg, mode: 'ask', root, messages: [{ role: 'user', content: 'q' }], emit: () => {} });
     const names = srv.requests[0].body.tools.map((t) => t.function.name).sort();
-    assert.deepStrictEqual(names, ['find_files', 'list_dir', 'read_file', 'search']);
+    assert.deepStrictEqual(names, ['ask_user', 'find_files', 'list_dir', 'read_file', 'search']);
     const r = await agent.runChat({ cfg, mode: 'raw', messages: [{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], emit: () => {} });
     assert.strictEqual(srv.requests[1].body.tools, undefined);
     assert.deepStrictEqual(srv.requests[1].body.messages.map((m) => m.content), ['S', 'U']);
@@ -238,7 +238,7 @@ test('plan mode: read-only tools and a planning system prompt', async () => {
       requestApproval: async () => { throw new Error('plan mode must not ask to edit'); },
     });
     const body = srv.requests[0].body;
-    assert.deepStrictEqual(body.tools.map((t) => t.function.name).sort(), ['find_files', 'list_dir', 'read_file', 'search']);
+    assert.deepStrictEqual(body.tools.map((t) => t.function.name).sort(), ['ask_user', 'find_files', 'list_dir', 'read_file', 'search']);
     assert.match(body.messages[0].content, /PLAN mode/);
     // Even if the model tries to write, the tool is unavailable and the file is untouched.
     assert.match(res.messages.find((m) => m.role === 'tool').content, /Unknown tool|not available/);
@@ -246,6 +246,60 @@ test('plan mode: read-only tools and a planning system prompt', async () => {
   } finally {
     await srv.close();
   }
+});
+
+test('ask_user: questions go to the UI and answers come back to the model', async () => {
+  const srv = await mock.start([
+    { toolCalls: [{ name: 'ask_user', args: { questions: [
+      { question: 'Which database?', options: ['PostgreSQL', 'SQLite', 'MySQL'] },
+      { question: 'Which features?', options: ['Auth', 'Search', 'Export'], multi_select: true },
+    ] } }] },
+    { content: 'Great, using SQLite.' },
+    { toolCalls: [{ name: 'ask_user', args: { questions: [{ question: 'Proceed?', options: ['Yes', 'No'] }] } }] },
+    { content: 'Ok, assuming yes.' },
+  ]);
+  try {
+    const cfg = { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm' };
+    let asked = null;
+    // No folder open: ask_user is still offered.
+    const res = await agent.runChat({
+      cfg, mode: 'agent', messages: [{ role: 'user', content: 'build an app' }], emit: () => {},
+      requestApproval: async (req) => {
+        asked = req;
+        return { approved: true, answers: [{ selected: ['SQLite'] }, { selected: ['Auth', 'Export'], other: 'Dark mode' }] };
+      },
+    });
+    assert.deepStrictEqual(srv.requests[0].body.tools.map((t) => t.function.name), ['ask_user']);
+    assert.strictEqual(asked.kind, 'question');
+    assert.strictEqual(asked.questions.length, 2);
+    assert.strictEqual(asked.questions[1].multiSelect, true);
+    const toolMsg = res.messages.find((m) => m.role === 'tool');
+    assert.match(toolMsg.content, /Which database\?\s+Answer: SQLite/);
+    assert.match(toolMsg.content, /Answer: Auth; Export; Dark mode/);
+    assert.ok(toolMsg._answers, 'structured answers kept for the UI');
+    // the follow-up request carries the answers but not the UI-only field
+    const sent = srv.requests[1].body.messages.find((m) => m.role === 'tool');
+    assert.match(sent.content, /SQLite/);
+    assert.strictEqual(sent._answers, undefined);
+    // Dismissing the questions tells the model to proceed with assumptions.
+    const res2 = await agent.runChat({
+      cfg, mode: 'ask', messages: [{ role: 'user', content: 'q' }], emit: () => {},
+      requestApproval: async () => ({ approved: false }),
+    });
+    assert.match(res2.messages.find((m) => m.role === 'tool').content, /dismissed the questions/);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('normalizeQuestions tolerates sloppy model arguments', () => {
+  const q = agent.normalizeQuestions({ questions: [
+    { question: ' Pick? ', options: ['a', '', { label: 'b' }], multiSelect: true },
+    { question: '', options: ['x'] },
+    { question: 'No options?' },
+  ] });
+  assert.deepStrictEqual(q, [{ question: 'Pick?', options: ['a', 'b'], multiSelect: true }]);
+  assert.deepStrictEqual(agent.normalizeQuestions({}), []);
 });
 
 test('cancelling a run keeps partial output and does not throw', async () => {
