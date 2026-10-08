@@ -90,7 +90,7 @@ app.on('browser-window-created', (_e, win) => {
       // Requests carried system prompt + tools + context
       const first = srv.requests.find((r) => r.url === '/v1/chat/completions');
       check(first && first.body.model === 'mock-model', 'request used configured model');
-      check(first && first.body.tools && first.body.tools.length === 9, 'agent tools sent');
+      check(first && first.body.tools && first.body.tools.length === 12, 'agent tools sent');
       check(first && /<context>/.test(first.body.messages[first.body.messages.length - 1].content), 'active file context attached');
 
       // Terminal
@@ -197,14 +197,14 @@ app.on('browser-window-created', (_e, win) => {
       for (let i = 0; i < 30 && !planBtn; i++) { await sleep(200); planBtn = await js(`!!document.querySelector('#btn-implement-plan')`); }
       check(planBtn, 'plan response shows "Implement plan" button');
       const planReq = srv.requests.slice(planStart).find((r) => r.url === '/v1/chat/completions');
-      check(planReq && planReq.body.tools.length === 5 && /PLAN mode/.test(planReq.body.messages[0].content), 'plan mode sends read-only tools + plan prompt');
+      check(planReq && planReq.body.tools.length === 7 && /PLAN mode/.test(planReq.body.messages[0].content), 'plan mode sends read-only tools + plan prompt');
       await shot('9-plan');
       srv.queue.push({ content: 'Implemented.' });
       const implStart = srv.requests.length;
       await js(`document.querySelector('#btn-implement-plan').click(); true`);
       let implReq = null;
       for (let i = 0; i < 30 && !implReq; i++) { await sleep(200); implReq = srv.requests.slice(implStart).find((r) => r.url === '/v1/chat/completions'); }
-      check(implReq && implReq.body.tools.length === 9 && /Implement the plan above/.test(implReq.body.messages[implReq.body.messages.length - 1].content) && /## Plan/.test(JSON.stringify(implReq.body.messages)),
+      check(implReq && implReq.body.tools.length === 12 && /Implement the plan above/.test(implReq.body.messages[implReq.body.messages.length - 1].content) && /## Plan/.test(JSON.stringify(implReq.body.messages)),
         'Implement plan switches to Agent mode with the plan in context');
       check(await js(`document.querySelector('#chat-mode').value`) === 'agent', 'mode selector switched to Agent');
       await sleep(600);
@@ -294,6 +294,68 @@ app.on('browser-window-created', (_e, win) => {
       check(lastUser && /1\. Which test framework do you prefer\?\s+→ Vitest/.test(lastUser.content) && /2\. Should I add CI\?\s+→ Yes, GitHub Actions/.test(lastUser.content), 'quick reply sends the chosen answers');
       await sleep(600);
       check(await js(`!document.querySelector('.quick-reply')`), 'quick reply disappears once answered');
+      // ---- Background processes: AI starts a dev server in the background
+      fs.writeFileSync(path.join(workspace, 'server.js'), "const http=require('http');const s=http.createServer((q,r)=>r.end('hello from bg'));s.listen(0,()=>console.log('listening on http://localhost:'+s.address().port))");
+      fs.writeFileSync(path.join(workspace, 'slow.js'), "console.log('build step 1');setInterval(()=>console.log('still building'),200)");
+      await js(`window.__app.saveSettings({ autoApproveCommands: true }).then(() => true)`);
+      await js(`window.__app.chat.newChat(); window.__app.chat.setMode('agent'); true`);
+      srv.queue.push({ toolCalls: [{ name: 'run_command', args: { command: 'node server.js', background: true, wait_for: 'listening' } }] });
+      srv.queue.push({ content: 'The server is running.' });
+      const bgStart = srv.requests.length;
+      await js(`window.__app.chat.send('start the server'); true`);
+      let bgReq = null;
+      for (let i = 0; i < 50 && !bgReq; i++) { await sleep(200); bgReq = srv.requests.slice(bgStart).filter((r) => r.url === '/v1/chat/completions')[1]; }
+      const bgTool = bgReq && bgReq.body.messages.filter((m) => m.role === 'tool').pop();
+      check(bgTool && /Process bg-\d+ .*running — http:\/\/localhost:\d+/.test(bgTool.content) && /Output matched "listening"/.test(bgTool.content), `AI starts a server in the background and gets its URL (${bgTool && bgTool.content.split('\n')[0]})`);
+      const procId = bgTool && /(bg-\d+)/.exec(bgTool.content)[1];
+      const url = bgTool && /(http:\/\/localhost:\d+)/.exec(bgTool.content)[1];
+      check(url && (await (await fetch(url)).text()) === 'hello from bg', 'background server is actually serving');
+      await sleep(600);
+      check((await js(`document.querySelector('#status-bg').textContent`)) === '⚙ 1 running', 'status bar shows the running process');
+      check(await js(`document.querySelector('#proc-count').textContent === '1'`), 'Processes tab shows a running count');
+      await js(`[...document.querySelectorAll('.tool .proc-link')].pop().click(); true`);
+      await sleep(800);
+      check(await js(`document.querySelector('#panel').classList.contains('view-processes') && !!document.querySelector('.proc-row.selected')`), 'process link opens the Processes panel with it selected');
+      check((await js(`document.querySelector('.proc-row.selected .proc-meta').textContent`)).includes(url), 'detected URL shown in the process list');
+      check(/listening on/.test(await js(`(() => { const t = window.__app.processes.xterm; const b = t.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + '\\n'; return s; })()`)), 'live output shown in the log viewer');
+      await shot('13-processes');
+      await js(`[...document.querySelectorAll('.proc-row.selected .cb-btn')].find((b) => b.textContent === 'Stop').click(); true`);
+      let stopped = false;
+      for (let i = 0; i < 25 && !stopped; i++) { await sleep(200); stopped = await js(`(() => { const p = window.__app.processes.procs.get(${JSON.stringify(procId)}); return !!p && p.status === 'stopped'; })()`); }
+      check(stopped, 'Stop button stops the process');
+      let refused = false;
+      try { await fetch(url, { signal: AbortSignal.timeout(2000) }); } catch { refused = true; }
+      check(refused, 'stopped server no longer accepts connections');
+      check(await js(`document.querySelector('#status-bg').classList.contains('hidden')`), 'status bar indicator hides when nothing runs');
+
+      // ---- "Send to background" on a long foreground command
+      srv.queue.push({ toolCalls: [{ name: 'run_command', args: { command: 'node slow.js' } }] });
+      srv.queue.push({ content: 'Continuing while it builds.' });
+      const sbStart = srv.requests.length;
+      await js(`window.__app.chat.send('run the slow build'); true`);
+      let bgBtn = false;
+      for (let i = 0; i < 40 && !bgBtn; i++) { await sleep(200); bgBtn = await js(`!!document.querySelector('.tool .bg-btn')`); }
+      check(bgBtn, '"Send to background" button appears on a running command');
+      await sleep(500);
+      await js(`document.querySelector('.tool .bg-btn').click(); true`);
+      let sbReq = null;
+      for (let i = 0; i < 40 && !sbReq; i++) { await sleep(200); sbReq = srv.requests.slice(sbStart).filter((r) => r.url === '/v1/chat/completions')[1]; }
+      const sbTool = sbReq && sbReq.body.messages.filter((m) => m.role === 'tool').pop();
+      check(sbTool && /build step 1/.test(sbTool.content) && /still running in the background as bg-\d+ \(the user sent it to the background\)/.test(sbTool.content), 'AI continues after the command is sent to the background');
+      await sleep(500);
+      const slowId = sbTool && /(bg-\d+)/.exec(sbTool.content)[1];
+      check(await js(`(() => { const p = window.__app.processes.procs.get(${JSON.stringify(slowId)}); return !!p && !p.hidden && p.status === 'running'; })()`), 'detached command is listed as a running background process');
+      await js(`window.api.bg.stop(${JSON.stringify(slowId)}).then(() => true)`);
+
+      // ---- User-started background process that fails → error notice
+      await js(`window.__app.processes.runInBackground(); true`);
+      await sleep(300);
+      await js(`(() => { const i = document.querySelector('.modal input'); i.value = 'node -e "console.log(1); process.exit(2)"'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+      let toastSeen = false;
+      for (let i = 0; i < 30 && !toastSeen; i++) { await sleep(200); toastSeen = await js(`[...document.querySelectorAll('.toast.error')].some((t) => /exited with code 2/.test(t.textContent))`); }
+      check(toastSeen, 'a background process that fails shows an error notice');
+      check(await js(`[...document.querySelectorAll('.proc-row .proc-meta')].some((m) => /You · exited \\(2\\)/.test(m.textContent))`), 'user-started process listed with its exit code');
+      await js(`window.__app.saveSettings({ autoApproveCommands: false }).then(() => true)`);
     } catch (e) {
       check(false, `exception: ${e.stack || e.message}`);
     }

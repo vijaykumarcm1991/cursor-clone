@@ -98,12 +98,23 @@
       <div class="resizer horizontal" id="resize-panel"></div>
       <div id="panel">
         <div class="panel-header">
+          <div class="panel-views">
+            <button class="pview active" data-pview="terminal">Terminal</button>
+            <button class="pview" data-pview="processes">Processes <span id="proc-count" class="pcount hidden"></span></button>
+          </div>
           <div id="term-tabs"></div>
+          <div class="spacer proc-only hidden"></div>
           <div class="view-actions">
-            <button class="icon-btn" id="btn-new-term" title="New Terminal">
+            <button class="icon-btn proc-only hidden" id="btn-run-bg" title="Run Command in Background…">
+              <svg viewBox="0 0 24 24"><path d="M7 5l11 7-11 7z"/></svg>
+            </button>
+            <button class="icon-btn proc-only hidden" id="btn-clear-procs" title="Clear Finished">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+            </button>
+            <button class="icon-btn term-only" id="btn-new-term" title="New Terminal">
               <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             </button>
-            <button class="icon-btn" id="btn-kill-term" title="Kill Terminal">
+            <button class="icon-btn term-only" id="btn-kill-term" title="Kill Terminal">
               <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13"/></svg>
             </button>
             <button class="icon-btn" id="btn-close-panel" title="Close Panel">
@@ -112,6 +123,13 @@
           </div>
         </div>
         <div id="term-host"></div>
+        <div id="proc-host" class="hidden">
+          <div id="proc-list"></div>
+          <div id="proc-log-wrap">
+            <div id="proc-log-head" class="muted">Select a process to see its output</div>
+            <div id="proc-log"></div>
+          </div>
+        </div>
       </div>
     </main>
 
@@ -160,6 +178,7 @@
     <span id="status-folder"></span>
     <span id="status-msg"></span>
     <span class="spacer"></span>
+    <span id="status-bg" class="clickable hidden" title="Background processes"></span>
     <span id="status-pos"></span>
     <span id="status-eol" class="clickable" title="End of line sequence"></span>
     <span id="status-lang"></span>

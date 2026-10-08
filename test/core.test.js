@@ -214,7 +214,7 @@ test('ask mode exposes only read-only tools; raw mode sends messages verbatim', 
     const cfg = { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm' };
     await agent.runChat({ cfg, mode: 'ask', root, messages: [{ role: 'user', content: 'q' }], emit: () => {} });
     const names = srv.requests[0].body.tools.map((t) => t.function.name).sort();
-    assert.deepStrictEqual(names, ['ask_user', 'find_files', 'list_dir', 'read_file', 'search']);
+    assert.deepStrictEqual(names, ['ask_user', 'find_files', 'list_dir', 'list_processes', 'read_file', 'read_process_output', 'search']);
     const r = await agent.runChat({ cfg, mode: 'raw', messages: [{ role: 'system', content: 'S' }, { role: 'user', content: 'U' }], emit: () => {} });
     assert.strictEqual(srv.requests[1].body.tools, undefined);
     assert.deepStrictEqual(srv.requests[1].body.messages.map((m) => m.content), ['S', 'U']);
@@ -238,7 +238,7 @@ test('plan mode: read-only tools and a planning system prompt', async () => {
       requestApproval: async () => { throw new Error('plan mode must not ask to edit'); },
     });
     const body = srv.requests[0].body;
-    assert.deepStrictEqual(body.tools.map((t) => t.function.name).sort(), ['ask_user', 'find_files', 'list_dir', 'read_file', 'search']);
+    assert.deepStrictEqual(body.tools.map((t) => t.function.name).sort(), ['ask_user', 'find_files', 'list_dir', 'list_processes', 'read_file', 'read_process_output', 'search']);
     assert.match(body.messages[0].content, /PLAN mode/);
     // Even if the model tries to write, the tool is unavailable and the file is untouched.
     assert.match(res.messages.find((m) => m.role === 'tool').content, /Unknown tool|not available/);
@@ -300,6 +300,51 @@ test('normalizeQuestions tolerates sloppy model arguments', () => {
   ] });
   assert.deepStrictEqual(q, [{ question: 'Pick?', options: ['a', 'b'], multiSelect: true }]);
   assert.deepStrictEqual(agent.normalizeQuestions({}), []);
+});
+
+test('background processes: start with wait_for, read output, timeout moves to background, stop', async () => {
+  const { ProcessManager } = require('../src/main/bgproc');
+  const bg = new ProcessManager();
+  const root = tmpdir();
+  fs.writeFileSync(path.join(root, 'server.js'), "const http=require('http');const s=http.createServer((q,r)=>r.end('hi'));s.listen(0,()=>{console.log('listening on http://localhost:'+s.address().port);setInterval(()=>console.log('heartbeat'),150)})");
+  fs.writeFileSync(path.join(root, 'slow.js'), "console.log('step 1');setInterval(()=>console.log('still going'),100)");
+  const nodeCmd = (f) => (platform.isWin ? `& "${process.execPath}" ${f}` : `"${process.execPath}" ${f}`);
+  const srv = await mock.start([
+    { toolCalls: [{ name: 'run_command', args: { command: nodeCmd('server.js'), background: true, wait_for: 'listening' } }] },
+    { toolCalls: [{ name: 'read_process_output', args: { id: 'bg-1', wait_seconds: 1 } }] },
+    { toolCalls: [{ name: 'run_command', args: { command: nodeCmd('slow.js'), timeout_seconds: 1 } }] },
+    { toolCalls: [{ name: 'list_processes', args: {} }] },
+    { toolCalls: [{ name: 'stop_process', args: { id: 'bg-1' } }, { name: 'stop_process', args: { id: 'bg-2' } }] },
+    { content: 'done' },
+  ]);
+  const events = [];
+  try {
+    const res = await agent.runChat({
+      cfg: { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm', autoApproveCommands: true },
+      mode: 'agent', root, bg, messages: [{ role: 'user', content: 'start the server' }], emit: (e) => events.push(e),
+    });
+    const tools = res.messages.filter((m) => m.role === 'tool').map((m) => m.content);
+    assert.match(tools[0], /Process bg-1 .*running — http:\/\/localhost:\d+/);
+    assert.match(tools[0], /Output matched "listening"/);
+    assert.match(tools[1], /heartbeat/);
+    assert.doesNotMatch(tools[1], /listening on/, 'only new output since the last read');
+    assert.match(tools[2], /step 1/);
+    assert.match(tools[2], /still running in the background as bg-2 \(it was still running after 1s\)/);
+    assert.match(tools[3], /bg-1: .*running.*\n- bg-2: .*running/);
+    assert.match(tools[4], /Stopped bg-1/);
+    assert.match(tools[5], /Stopped bg-2/);
+    assert.ok(events.some((e) => e.type === 'tool_process' && e.procId === 'bg-1' && e.background));
+    assert.ok(events.some((e) => e.type === 'tool_process' && e.procId === 'bg-2' && !e.background));
+    assert.strictEqual(bg.list().filter((p) => p.status === 'running').length, 0);
+    // The next message's system prompt tells the AI about the background processes.
+    srv.queue.push({ content: 'ok' });
+    await agent.runChat({ cfg: { baseURL: srv.baseURL, apiKey: 'test-key', model: 'm' }, mode: 'ask', root, bg, messages: [{ role: 'user', content: 'status?' }], emit: () => {} });
+    const sys = srv.requests[srv.requests.length - 1].body.messages[0].content;
+    assert.match(sys, /Background processes in this workspace[\s\S]*bg-1: .*stopped[\s\S]*bg-2: .*stopped/);
+  } finally {
+    await bg.reset();
+    await srv.close();
+  }
 });
 
 test('cancelling a run keeps partial output and does not throw', async () => {

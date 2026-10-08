@@ -15,6 +15,7 @@ It's built with Electron, the Monaco editor (the editor core used by VS Code) an
 | **Tab autocomplete** | AI ghost-text completions. It uses either a chat model or a fill-in-the-middle `/completions` endpoint (Ollama, DeepSeek, Codestral, vLLM). |
 | **Context** | The current file and selection are attached automatically. Use `@file` mentions or 📎 to attach more files, add a selection with `Ctrl+L`, or send terminal output to the chat. |
 | **Editor** | Tabs, preview tabs, a file explorer (create, rename, delete to trash), find-in-files, quick open (`Ctrl+P`), a command palette (`Ctrl+Shift+P`), diff views, LF/CRLF handling, light and dark themes. |
+| **Background processes** | The AI starts dev servers, watchers and long builds in the background (`run_command` with `background: true`, optionally waiting for output such as "listening"), then checks their output, sees the server URL, and stops them when done. If a normal command runs long, click **⇢ Send to background** on its card and the AI carries on; a command that hits its timeout is moved to the background instead of being killed. The **Processes** tab next to Terminal lists every process with live output, URL links and Stop / Restart buttons, and you can start your own with ▶ or *Background: Run Command in Background…*. Stopping kills the whole process tree (`taskkill /T` on Windows, the process group on Linux). Processes are stopped when you close the app or switch folders, and you're warned first. At most 10 run at once. |
 | **Terminal** (`` Ctrl+` ``) | Multiple integrated terminals: PowerShell or cmd on Windows, your `$SHELL` on Linux. |
 | **Multiple-choice answers** | When the AI needs a decision, it asks with clickable options: radio buttons, checkboxes for "select all that apply", and an "Other" field. It does this through an `ask_user` tool, and your answers go straight back so it can continue the task. Multiple-choice questions written as plain text (for example `A) … B) …` at the end of a reply) also become a clickable answer form, so this works even with models or servers that don't support tools. |
 | **Models** | Choose any model the API offers straight from the chat panel. The choice is per chat, and new chats use the **default model** set in Settings. Both pickers list `/models` from your server, are searchable and scrollable, and also accept a typed model name for servers without a model list. |
@@ -122,6 +123,7 @@ src/
     workspace.js        file tree, search, .gitignore, path safety
     platform.js         shell detection, run/kill process trees (Windows + POSIX)
     terminal.js         node-pty → `script` → pipe fallbacks
+    bgproc.js           background process manager (output buffers, detach, URL detection, tree kill)
     settings.js         settings with keychain-encrypted API key
   preload.js            minimal, typed bridge (contextIsolation + sandbox)
   renderer/             UI (plain ES modules, no bundler)
@@ -131,6 +133,7 @@ src/
     js/inline.js        Ctrl+K inline edit + ghost-text autocomplete
     js/explorer.js      file tree
     js/terminal.js      xterm.js terminals
+    js/processes.js     Processes panel (background processes)
 test/
   core.test.js          unit/integration tests against a mock OpenAI server
   smoke-main.js         end-to-end test that drives the real app UI

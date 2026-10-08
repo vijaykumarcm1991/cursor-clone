@@ -4,7 +4,11 @@ const fsp = require('fs').promises;
 const path = require('path');
 const ai = require('./ai');
 const ws = require('./workspace');
-const { runCommand, platformInfo } = require('./platform');
+const { platformInfo } = require('./platform');
+const { defaultManager, stripAnsi } = require('./bgproc');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const clampSec = (v, def, max) => Math.min(max, Math.max(1, parseInt(v, 10) || def));
 
 const MAX_TOOL_OUTPUT = 24000;
 const MAX_ITERATIONS = 40;
@@ -44,11 +48,23 @@ const TOOLS = {
   delete_file: fn('delete_file', 'Delete a file from the workspace.', {
     path: { type: 'string', description: 'File path relative to the workspace root.' },
   }, ['path']),
-  run_command: fn('run_command', 'Run a shell command in the workspace and return its combined output and exit code. Commands must be non-interactive. Do not start long-running servers/watchers.', {
+  run_command: fn('run_command', 'Run a shell command in the workspace and return its combined output and exit code. Commands must be non-interactive. For dev servers, watchers and other long-running commands set background: true; they keep running while you continue, and you check them with read_process_output. A foreground command still running after timeout_seconds is moved to the background (not killed).', {
     command: { type: 'string', description: 'The command line to execute.' },
     cwd: { type: 'string', description: 'Optional working directory relative to the workspace root.' },
-    timeout_seconds: { type: 'integer', description: 'Optional timeout (default 120, max 600).' },
+    background: { type: 'boolean', description: 'Run in the background and return immediately with a process id (for servers, watchers, long builds). Default false.' },
+    wait_for: { type: 'string', description: 'Background only: wait until the output matches this text/regex (e.g. "ready|listening") before returning.' },
+    wait_seconds: { type: 'integer', description: 'Background only: how long to wait for wait_for or initial output (default 3, or 30 with wait_for; max 120).' },
+    timeout_seconds: { type: 'integer', description: 'Foreground only: seconds before the command is moved to the background (default 120, max 600).' },
   }, ['command']),
+  read_process_output: fn('read_process_output', 'Get new output from a background process since you last read it, plus its status (running / exited with code). Optionally wait for more output, a pattern, or the process to exit.', {
+    id: { type: 'string', description: 'Process id, e.g. "bg-1".' },
+    wait_for: { type: 'string', description: 'Optional text/regex to wait for in the output.' },
+    wait_seconds: { type: 'integer', description: 'Optional seconds to wait for wait_for or for the process to exit (max 120).' },
+  }, ['id']),
+  stop_process: fn('stop_process', 'Stop a background process (and all of its child processes).', {
+    id: { type: 'string', description: 'Process id, e.g. "bg-1".' },
+  }, ['id']),
+  list_processes: fn('list_processes', 'List background processes with their status and any detected URL.', {}),
 };
 
 TOOLS.ask_user = fn('ask_user', 'Ask the user one or more multiple-choice questions and wait for their answers. Use this whenever you need the user to pick between options or clarify requirements, instead of writing the options as plain text. The user can also type a custom answer.', {
@@ -67,7 +83,7 @@ TOOLS.ask_user = fn('ask_user', 'Ask the user one or more multiple-choice questi
   },
 }, ['questions']);
 
-const READ_ONLY_TOOLS = ['list_dir', 'read_file', 'search', 'find_files', 'ask_user'];
+const READ_ONLY_TOOLS = ['list_dir', 'read_file', 'search', 'find_files', 'ask_user', 'read_process_output', 'list_processes'];
 const AGENT_TOOLS = Object.keys(TOOLS);
 const NO_FOLDER_TOOLS = ['ask_user'];
 
@@ -133,13 +149,23 @@ function applyEdit(content, oldStr, newStr, replaceAll = false) {
   return { ok: true, content: out, replaced: replaceAll ? count : 1 };
 }
 
+function procHeader(p) {
+  const state = p.status === 'running' ? 'running' : p.status === 'stopped' ? 'stopped' : `exited with code ${p.exitCode}`;
+  return `Process ${p.id} \`${p.command}\`: ${state}${p.url ? ` — ${p.url}` : ''}`;
+}
+
+function listText(bg) {
+  const lines = bg.summary();
+  return lines.length ? `Background processes:\n${lines.join('\n')}` : 'There are no background processes.';
+}
+
 function numberLines(text, start = 1) {
   const lines = text.split(/\r?\n/);
   const width = String(start + lines.length - 1).length;
   return lines.map((l, i) => `${String(start + i).padStart(width, ' ')}|${l}`).join('\n');
 }
 
-async function buildSystemPrompt({ mode, root }) {
+async function buildSystemPrompt({ mode, root, bg }) {
   const p = platformInfo();
   const lines = [
     'You are an expert AI pair programmer working inside a code editor (a Cursor-like IDE).',
@@ -165,6 +191,7 @@ async function buildSystemPrompt({ mode, root }) {
       'Work autonomously until the task is complete: explore the relevant code first, then make focused changes.',
       'Prefer edit_file for targeted changes; use write_file for new files or full rewrites. Never output whole files in chat instead of editing them.',
       'After editing, verify when practical (e.g. run tests, a build, or a linter) and fix problems you introduced.',
+      'Start dev servers, watchers and other long-running commands with run_command background: true (use wait_for, e.g. "ready|listening|compiled", to wait until it is up), then check them with read_process_output. Stop servers you no longer need with stop_process, but leave ones the user asked to keep running.',
       'The user may reject a proposed change or command; if so, adapt to their feedback.',
       'Finish with a brief summary of what you changed.',
     );
@@ -189,6 +216,8 @@ async function buildSystemPrompt({ mode, root }) {
       'When suggesting code changes, show them as fenced code blocks with the language and, on the opening fence, the file path, e.g. ```ts src/app.ts',
     );
   }
+  const procs = bg ? bg.summary() : [];
+  if (procs.length) lines.push('', 'Background processes in this workspace (use read_process_output to see their output):', ...procs);
   lines.push(
     'When you need the user to choose between options or answer clarifying questions, call the ask_user tool (multiple choice) instead of listing the options as plain text; you will receive the answers and can continue.',
     'Be concise. Format answers in Markdown.',
@@ -254,6 +283,7 @@ async function buildContextBlock(root, context, overlays) {
  */
 async function runChat(o) {
   const { cfg, mode, root, overlays = {}, signal, emit } = o;
+  const bg = o.bg || defaultManager;
   const requestApproval = o.requestApproval || (async () => ({ approved: true }));
   const history = o.messages.map((m) => ({ ...m }));
   const newMessages = [];
@@ -270,7 +300,7 @@ async function runChat(o) {
       if (ctx) last.content = ctx + String(last.content || '');
       newMessages.push(last);
     }
-    convo = [{ role: 'system', content: await buildSystemPrompt({ mode, root }) }, ...history];
+    convo = [{ role: 'system', content: await buildSystemPrompt({ mode, root, bg }) }, ...history];
     tools = (root ? (mode === 'agent' ? AGENT_TOOLS : READ_ONLY_TOOLS) : NO_FOLDER_TOOLS).map((t) => TOOLS[t]);
   }
 
@@ -392,15 +422,63 @@ async function runChat(o) {
           const cwd = ws.resolveIn(root, args.cwd || '.');
           const command = String(args.command || '');
           if (!command.trim()) return { ok: false, output: 'Empty command.' };
+          const background = !!args.background;
           if (!autoCmds) {
-            const res = await requestApproval({ kind: 'command', toolCallId: call.id, command, cwd: ws.relPath(root, cwd) });
+            const res = await requestApproval({ kind: 'command', toolCallId: call.id, command, cwd: ws.relPath(root, cwd), background });
             if (!res.approved) return { ok: false, rejected: true, output: `The user declined to run this command.${res.feedback ? ` Feedback: ${res.feedback}` : ''}` };
           }
-          const timeoutMs = Math.min(600, Math.max(1, parseInt(args.timeout_seconds, 10) || 120)) * 1000;
-          const r = await runCommand(command, { cwd, timeoutMs, signal, onData: (text) => emit({ type: 'tool_output', id: call.id, text }) });
-          const status = r.timedOut ? `Command timed out after ${timeoutMs / 1000}s.` : `Exit code: ${r.code}`;
-          return { ok: !r.timedOut && r.code === 0, output: `${clip(r.output || '(no output)')}\n${status}` };
+          if (background) {
+            const info = bg.start(command, { cwd, origin: 'agent' });
+            emit({ type: 'tool_process', id: call.id, procId: info.id, background: true });
+            const p = bg.get(info.id);
+            let note = '';
+            if (args.wait_for) {
+              const secs = clampSec(args.wait_seconds, 30, 120);
+              const w = await bg.waitFor(info.id, args.wait_for, secs * 1000);
+              note = w.matched ? `Output matched "${args.wait_for}".` : w.exited ? `The process exited before "${args.wait_for}" appeared.` : `"${args.wait_for}" did not appear within ${secs}s; it may still be starting.`;
+            } else {
+              await Promise.race([sleep(clampSec(args.wait_seconds, 3, 120) * 1000), p.exitPromise]);
+            }
+            const r = bg.read(info.id);
+            return { ok: r.status === 'running' || r.exitCode === 0, output: `${procHeader(r)}${note ? `\n${note}` : ''}\nOutput so far:\n${clip(stripAnsi(r.output).trim() || '(no output yet)')}${r.status === 'running' ? `\nIt keeps running in the background. Use read_process_output("${r.id}") to check it and stop_process("${r.id}") to stop it.` : ''}` };
+          }
+          const timeoutMs = clampSec(args.timeout_seconds, 120, 600) * 1000;
+          const r = await bg.runForeground(command, {
+            cwd, timeoutMs, signal,
+            onData: (text) => emit({ type: 'tool_output', id: call.id, text }),
+            onStart: (procId) => emit({ type: 'tool_process', id: call.id, procId, background: false }),
+          });
+          const out = clip(r.output.trim() || '(no output)');
+          if (r.detached) {
+            const why = r.reason === 'user' ? 'the user sent it to the background' : `it was still running after ${timeoutMs / 1000}s`;
+            return { ok: true, output: `${out}\n\nThe command is still running in the background as ${r.id} (${why}). Use read_process_output("${r.id}") to check on it and stop_process("${r.id}") to stop it.` };
+          }
+          const status = r.status === 'stopped' ? 'The command was stopped.' : `Exit code: ${r.code}`;
+          return { ok: r.code === 0, output: `${out}\n${status}` };
         }
+        case 'read_process_output': {
+          const p = bg.get(args.id || '');
+          if (!p) return { ok: false, output: `No background process "${args.id}". ${listText(bg)}` };
+          if (p.status === 'running' && (args.wait_for || args.wait_seconds)) {
+            const secs = clampSec(args.wait_seconds, 30, 120);
+            if (args.wait_for) await bg.waitFor(p.id, args.wait_for, secs * 1000);
+            else await Promise.race([sleep(secs * 1000), p.exitPromise]);
+          }
+          const r = bg.read(p.id);
+          const text = stripAnsi(r.output).trim();
+          return { ok: true, output: `${procHeader(r)}\n${text ? `${r.truncated ? '...[earlier output omitted]\n' : ''}${text}` : '(no new output since the last read)'}` };
+        }
+        case 'stop_process': {
+          const p = bg.get(args.id || '');
+          if (!p) return { ok: false, output: `No background process "${args.id}". ${listText(bg)}` };
+          if (p.status !== 'running') return { ok: true, output: `${procHeader(p.info())} — nothing to stop.` };
+          bg.stop(p.id);
+          await Promise.race([p.exitPromise, sleep(5000)]);
+          const tail = stripAnsi(bg.read(p.id).output).trim();
+          return { ok: true, output: `Stopped ${p.id} (\`${p.command}\`).${tail ? `\nFinal output:\n${clip(tail, 4000)}` : ''}` };
+        }
+        case 'list_processes':
+          return { ok: true, output: listText(bg) };
         default:
           return { ok: false, output: `Unknown tool: ${name}` };
       }

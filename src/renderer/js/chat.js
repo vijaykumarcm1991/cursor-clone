@@ -21,6 +21,7 @@ marked.use({
 
 const TOOL_LABEL = {
   list_dir: 'List', read_file: 'Read', search: 'Search', find_files: 'Find', write_file: 'Write', edit_file: 'Edit', delete_file: 'Delete', run_command: 'Run', ask_user: 'Question',
+  read_process_output: 'Output', stop_process: 'Stop', list_processes: 'Processes',
 };
 
 let formSeq = 0;
@@ -85,7 +86,9 @@ function questionForm(questions, { answers = null, submitLabel = 'Submit', onSub
 function toolArgSummary(name, args) {
   if (!args) return '';
   switch (name) {
-    case 'run_command': return args.command || '';
+    case 'run_command': return `${args.background ? '⟳ ' : ''}${args.command || ''}`;
+    case 'read_process_output': case 'stop_process': return args.id || '';
+    case 'list_processes': return '';
     case 'ask_user': return (args.questions || []).map((q) => q && q.question).filter(Boolean).join(' · ');
     case 'search': return `${args.query || ''}${args.include ? `  in ${args.include}` : ''}`;
     case 'find_files': return args.pattern || '';
@@ -698,7 +701,7 @@ export class Chat {
   }
 
   toolCard(id, name, args) {
-    const card = h('div', { class: 'tool run', 'data-id': id });
+    const card = h('div', { class: `tool run${name === 'run_command' && args.background ? ' bg' : ''}`, 'data-id': id });
     const head = h('div', { class: 'tool-head', onclick: () => card.classList.toggle('expanded') },
       h('span', { class: 'tname' }, TOOL_LABEL[name] || name),
       h('span', { class: 'targ', title: toolArgSummary(name, args) }, toolArgSummary(name, args)),
@@ -721,8 +724,23 @@ export class Chat {
     return card;
   }
 
+  /** Link to a background process (bg-N) mentioned by a process tool → opens the Processes tab. */
+  addProcLink(card, procId) {
+    if (!procId || card.querySelector('.proc-link')) return;
+    const head = card.querySelector('.tool-head');
+    head.insertBefore(h('button', {
+      class: 'proc-link', title: 'Show in the Processes panel',
+      onclick: (e) => { e.stopPropagation(); this.app.processes.open(procId); },
+    }, `${procId} ↗`), head.querySelector('.tstatus'));
+  }
+
   finishToolCard(card, { ok, output, rejected }) {
     card.classList.remove('run');
+    card.querySelector('.bg-btn')?.remove();
+    if (['run_command', 'read_process_output', 'stop_process'].includes(card._name)) {
+      const m = /\b(bg-\d+)\b/.exec(output || '');
+      if (m && (card._name !== 'run_command' || /in the background|keeps running|Process bg-/.test(output))) this.addProcLink(card, m[1]);
+    }
     card.classList.add(ok ? 'ok' : 'err');
     card.querySelector('.tstatus').textContent = ok ? '✓' : rejected ? 'rejected' : '✗';
     if (output != null) card._body.textContent = output;
@@ -833,6 +851,20 @@ class LiveRun {
         this.chat.scrollToBottom();
         break;
       }
+      case 'tool_process': {
+        const card = this.cards.get(ev.id);
+        if (!card) break;
+        card._procId = ev.procId;
+        if (ev.background) this.chat.addProcLink(card, ev.procId);
+        else if (!card.querySelector('.bg-btn')) {
+          const head = card.querySelector('.tool-head');
+          head.insertBefore(h('button', {
+            class: 'cb-btn bg-btn', title: 'Keep it running in the background and let the AI continue',
+            onclick: (e) => { e.stopPropagation(); e.target.remove(); window.api.bg.detach(ev.procId); },
+          }, '⇢ Send to background'), head.querySelector('.tstatus'));
+        }
+        break;
+      }
       case 'tool_output': {
         const card = this.cards.get(ev.id);
         if (card) {
@@ -901,7 +933,7 @@ class LiveRun {
     }
     if (ev.kind === 'command') {
       box.append(
-        h('div', {}, `Run command in `, h('code', {}, ev.cwd || '.'), '?'),
+        h('div', {}, `Run command in `, h('code', {}, ev.cwd || '.'), '?', ev.background ? h('span', { class: 'badge-bg' }, 'background') : null),
         h('div', { class: 'cmd' }, ev.command),
         h('div', { class: 'row' }, feedback),
         h('div', { class: 'row' },

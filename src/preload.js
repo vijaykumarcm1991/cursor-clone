@@ -50,6 +50,15 @@ contextBridge.exposeInMainWorld('api', {
     test: invoke('ai:test'),
     revert: invoke('ai:revert'),
   },
+  bg: {
+    list: invoke('bg:list'),
+    start: invoke('bg:start'),
+    stop: invoke('bg:stop'),
+    restart: invoke('bg:restart'),
+    remove: invoke('bg:remove'),
+    detach: invoke('bg:detach'),
+    output: invoke('bg:output'),
+  },
   term: {
     create: invoke('term:create'),
     write: (id, data) => ipcRenderer.send('term:write', id, data),

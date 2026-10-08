@@ -32,6 +32,7 @@ export class TerminalPanel {
   }
 
   async create(cwd) {
+    if (this.app.processes && this.app.processes.view !== 'terminal') this.app.processes.show('terminal');
     this.app.layout.togglePanel(true);
     const theme = THEMES[this.app.settings.theme === 'light' ? 'light' : 'dark'];
     const xterm = new Terminal({
@@ -140,7 +141,11 @@ export class TerminalPanel {
 
   async ensure() {
     if (!this.terms.length) await this.create();
-    else { this.app.layout.togglePanel(true); this.activate(this.active || this.terms[0]); }
+    else {
+      if (this.app.processes && this.app.processes.view !== 'terminal') this.app.processes.show('terminal');
+      this.app.layout.togglePanel(true);
+      this.activate(this.active || this.terms[0]);
+    }
   }
 
   focus() {

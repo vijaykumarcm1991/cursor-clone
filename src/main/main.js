@@ -9,6 +9,7 @@ const ws = require('./workspace');
 const ai = require('./ai');
 const agent = require('./agent');
 const terminal = require('./terminal');
+const { defaultManager: bg } = require('./bgproc');
 const { platformInfo } = require('./platform');
 
 const APP_ROOT = path.join(__dirname, '..', '..');
@@ -188,6 +189,7 @@ async function openWorkspace(dir) {
   const st = await fsp.stat(abs);
   if (!st.isDirectory()) throw new Error(`${abs} is not a folder`);
   closeWatchers();
+  if (root !== abs) await bg.reset(); // background processes belong to the old folder
   root = abs;
   settings.addRecentFolder(abs);
   buildMenu();
@@ -239,6 +241,12 @@ function handle(channel, fnc) {
   ipcMain.handle(channel, async (_e, ...args) => fnc(...args));
 }
 
+// Forward background-process events to the UI (foreground agent commands stay hidden).
+bg.on('output', (ev) => { if (!ev.hidden) send('bg:output', { id: ev.id, text: ev.text }); });
+bg.on('status', (info) => send('bg:status', info));
+bg.on('exit', (info) => send('bg:exit', info));
+bg.on('removed', (ev) => send('bg:removed', ev));
+
 function registerIpc() {
   handle('app:info', () => ({
     ...platformInfo(),
@@ -279,7 +287,7 @@ function registerIpc() {
   });
 
   handle('workspace:open', (dir) => openWorkspace(dir));
-  handle('workspace:close', () => { root = null; closeWatchers(); if (win) win.setTitle('Cursor Clone'); return null; });
+  handle('workspace:close', async () => { await bg.reset(); root = null; closeWatchers(); if (win) win.setTitle('Cursor Clone'); return null; });
   handle('workspace:root', () => root);
 
   handle('fs:readDir', (dir) => ws.readDir(dir));
@@ -329,6 +337,7 @@ function registerIpc() {
         signal: ctrl.signal,
         emit,
         requestApproval,
+        bg,
         prefs: () => settings.load(),
       });
       return result;
@@ -378,6 +387,15 @@ function registerIpc() {
     return true;
   });
 
+  // ---- Background processes -------------------------------------------------
+  handle('bg:list', () => bg.list());
+  handle('bg:start', (command) => bg.start(String(command || ''), { cwd: root || require('os').homedir(), origin: 'user' }));
+  handle('bg:stop', (id) => bg.stop(id));
+  handle('bg:restart', (id) => bg.restart(id));
+  handle('bg:remove', (id) => bg.remove(id));
+  handle('bg:detach', (id) => bg.detach(id, 'user'));
+  handle('bg:output', (id) => bg.output(id));
+
   // ---- Terminal -------------------------------------------------------------
   handle('term:create', (opts) => terminal.create({ ...(opts || {}), cwd: (opts && opts.cwd) || root || require('os').homedir(), shell: settings.load().terminalShell }, send));
   ipcMain.on('term:write', (_e, id, data) => terminal.write(id, data));
@@ -423,7 +441,9 @@ if (!gotLock && process.env.CURSOR_CLONE_MULTI !== '1') {
     createWindow();
   });
 
+  app.on('before-quit', () => bg.stopAll());
   app.on('window-all-closed', () => {
+    bg.stopAll();
     terminal.killAll();
     for (const c of runs.values()) c.abort();
     app.quit();

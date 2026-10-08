@@ -21,7 +21,7 @@
   "private": true,
   "scripts": {
     "start": "node scripts/start.js",
-    "test": "node --test test/core.test.js test/choices.test.mjs",
+    "test": "node --test test/core.test.js test/bgproc.test.js test/choices.test.mjs",
     "test:e2e": "node scripts/e2e.js",
     "icon": "node scripts/make-icon.js",
     "pack": "electron-builder --dir --publish never",

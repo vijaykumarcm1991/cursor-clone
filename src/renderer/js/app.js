@@ -6,6 +6,7 @@ import { SearchView } from './search.js';
 import { Chat } from './chat.js';
 import { InlineAI } from './inline.js';
 import { TerminalPanel } from './terminal.js';
+import { ProcessesView } from './processes.js';
 import { openSettings } from './settings.js';
 
 const app = {
@@ -131,6 +132,7 @@ async function openFolder(dir) {
   if (!dir) dir = await window.api.dialog.openFolder();
   if (!dir) return;
   if (app.editors && !(await app.editors.confirmDirty(app.editors.tabs))) return;
+  if (app.processes && app.root && dir !== app.root && !(await app.processes.confirmStopAll('Opening another folder'))) return;
   try {
     dir = await window.api.workspace.open(dir);
   } catch (e) {
@@ -152,6 +154,7 @@ async function openFolder(dir) {
 
 async function closeFolder() {
   if (!(await app.editors.confirmDirty(app.editors.tabs))) return;
+  if (!(await app.processes.confirmStopAll('Closing the folder'))) return;
   for (const t of [...app.editors.tabs]) app.editors.removeTab(t);
   await window.api.workspace.close();
   app.root = null;
@@ -233,6 +236,8 @@ const commands = [
   { id: 'toggleTerminal', label: 'View: Toggle Terminal', kb: 'Ctrl+`', run: () => toggleTerminal() },
   { id: 'newTerminal', label: 'Terminal: New Terminal', kb: 'Ctrl+Shift+`', run: () => app.terminal.create() },
   { id: 'killTerminal', label: 'Terminal: Kill Terminal', run: () => app.terminal.kill() },
+  { id: 'runBackground', label: 'Background: Run Command in Background…', run: () => app.processes.runInBackground() },
+  { id: 'showProcesses', label: 'Background: Show Processes', run: () => app.processes.show('processes') },
   { id: 'searchFiles', label: 'Search: Find in Files', kb: 'Ctrl+Shift+F', run: () => { layout.showView('search'); app.search.focus(app.editors.selectionInfo()?.text?.split('\n')[0]); } },
   { id: 'showExplorer', label: 'View: Show Explorer', kb: 'Ctrl+Shift+E', run: () => { layout.showView('explorer'); app.explorer.el.focus(); } },
   { id: 'revealFile', label: 'File: Reveal Active File in Explorer', run: () => { const t = app.editors.getActive(); if (t?.path) { layout.showView('explorer'); app.explorer.reveal(t.path); } } },
@@ -289,6 +294,7 @@ function toggleChatWithSelection() {
 }
 
 async function toggleTerminal() {
+  if (layout.state.panel && app.processes.view === 'processes') { app.processes.show('terminal'); await app.terminal.ensure(); return; }
   if (layout.state.panel) {
     if (app.terminal.host.contains(document.activeElement)) { layout.togglePanel(false); app.editors.editor.focus(); } else app.terminal.focus();
     return;
@@ -371,6 +377,7 @@ async function boot() {
   app.explorer = new Explorer(app);
   app.search = new SearchView(app);
   app.terminal = new TerminalPanel(app);
+  app.processes = new ProcessesView(app);
   app.chat = new Chat(app);
   app.inline = new InlineAI(app);
   updateModelStatus();
@@ -401,7 +408,7 @@ async function boot() {
   window.addEventListener('keydown', onGlobalKey, true);
   window.api.on('menu', (cmd) => runCommand(cmd));
   window.api.on('app:beforeClose', async () => {
-    if (await app.editors.confirmDirty(app.editors.tabs)) {
+    if (await app.editors.confirmDirty(app.editors.tabs) && await app.processes.confirmStopAll('Closing the app')) {
       saveOpenTabs();
       window.api.app.closeConfirmed();
     }

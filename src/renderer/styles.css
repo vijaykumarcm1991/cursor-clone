@@ -426,3 +426,34 @@ body:not(.show-chat) #chat, body:not(.show-chat) #resize-chat { display: none; }
 .approval.question { background: var(--bg-3); border-color: var(--accent); padding: 0; }
 .quick-reply { border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-3); padding: 4px; }
 .quick-reply .qhint { padding: 4px 8px 0; font-size: 11px; }
+
+/* background processes */
+.panel-views { display: flex; gap: 2px; margin-right: 10px; flex-shrink: 0; }
+.pview { border: 0; background: transparent; color: var(--muted); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; padding: 4px 8px; border-bottom: 1px solid transparent; }
+.pview:hover { color: var(--fg-strong); }
+.pview.active { color: var(--fg-strong); border-bottom-color: var(--accent); }
+.pcount { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: var(--accent-fg); font-size: 10px; letter-spacing: 0; text-align: center; }
+#panel.view-processes #term-tabs, #panel.view-processes #term-host, #panel.view-processes .term-only { display: none; }
+#panel.view-processes .proc-only { display: flex !important; }
+#panel.view-processes #proc-host { display: flex !important; }
+#proc-host { flex: 1; min-height: 0; }
+#proc-list { width: 42%; min-width: 260px; max-width: 520px; overflow-y: auto; border-right: 1px solid var(--border); }
+#proc-list .empty { padding: 12px; color: var(--muted); font-size: 12px; }
+.proc-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.proc-row:hover { background: var(--bg-hover); }
+.proc-row.selected { background: var(--accent-soft); }
+.proc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
+.proc-dot.running { background: var(--ok); box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.2); }
+.proc-dot.failed { background: var(--danger); }
+.proc-dot.stopped { background: var(--warn); }
+.proc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.proc-cmd { font: 12px var(--mono); color: var(--fg-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-meta { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-meta a { color: var(--accent); }
+.proc-actions { display: flex; gap: 2px; flex-shrink: 0; }
+#proc-log-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#proc-log-head { padding: 4px 10px; font-size: 11px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; white-space: nowrap; overflow: hidden; }
+#proc-log { flex: 1; min-height: 0; padding: 4px 0 0 10px; }
+.tool .proc-link { border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 7px; font-size: 11px; color: var(--accent); background: transparent; flex-shrink: 0; }
+.tool .bg-btn { flex-shrink: 0; }
+.badge-bg { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--accent); color: var(--accent); border-radius: 8px; padding: 0 6px; margin-left: 4px; }
