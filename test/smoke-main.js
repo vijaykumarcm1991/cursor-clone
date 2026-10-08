@@ -317,7 +317,11 @@ app.on('browser-window-created', (_e, win) => {
       await sleep(800);
       check(await js(`document.querySelector('#panel').classList.contains('view-processes') && !!document.querySelector('.proc-row.selected')`), 'process link opens the Processes panel with it selected');
       check((await js(`document.querySelector('.proc-row.selected .proc-meta').textContent`)).includes(url), 'detected URL shown in the process list');
-      check(/listening on/.test(await js(`(() => { const t = window.__app.processes.xterm; const b = t.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) s += b.getLine(i).translateToString(true) + '\\n'; return s; })()`)), 'live output shown in the log viewer');
+      const logText = `(() => { const t = window.__app.processes.xterm; if (!t) return ''; const b = t.buffer.active; let s = ''; for (let i = 0; i < b.length; i++) { const l = b.getLine(i); s += (l.isWrapped ? '' : '\\n') + l.translateToString(true); } return s; })()`;
+      let logOk = false;
+      for (let i = 0; i < 30 && !logOk; i++) { await sleep(200); logOk = /listening on/.test(await js(logText)); }
+      const logDiag = logOk ? '' : ` [diag: ${JSON.stringify(await js(`(async () => { const pv = window.__app.processes; const o = await window.api.bg.output(pv.selected); return { selected: pv.selected, view: pv.view, head: document.querySelector('#proc-log-head').textContent, outLen: o && o.text.length, outStart: o && o.text.slice(0, 80), bufLines: pv.xterm && pv.xterm.buffer.active.length, logBox: (() => { const r = document.querySelector('#proc-log').getBoundingClientRect(); return [r.width, r.height]; })() }; })()`))}]`;
+      check(logOk, `live output shown in the log viewer${logDiag}`);
       await shot('13-processes');
       await js(`[...document.querySelectorAll('.proc-row.selected .cb-btn')].find((b) => b.textContent === 'Stop').click(); true`);
       let stopped = false;
